@@ -60,6 +60,7 @@ export default function DishesPage() {
       .select('*, ingredients(id, name, quantity, unit)')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
+      .order('name', { ascending: true })
     setDishes(data || [])
     setLoading(false)
   }
