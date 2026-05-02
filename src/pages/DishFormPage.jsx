@@ -242,7 +242,7 @@ export default function DishFormPage() {
             />
           </div>
           <div className="form-group">
-            <label className="form-label">Кол-во порций</label>
+            <label className="form-label">Приёмов пищи</label>
             <input
               type="number"
               className="form-input"
@@ -251,13 +251,16 @@ export default function DishFormPage() {
               value={form.servings_count}
               onChange={e => setForm(f => ({ ...f, servings_count: e.target.value }))}
             />
-            <span className="form-hint">На сколько приёмов хватит</span>
+            <span className="form-hint">Сколько раз хватит одного приготовления на всех</span>
           </div>
         </div>
 
         {/* Ingredients */}
         <div className="form-group">
-          <label className="form-label">Ингредиенты</label>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 }}>
+            <label className="form-label" style={{ margin: 0 }}>Ингредиенты *</label>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontStyle: 'italic' }}>* на всё блюдо целиком, а не на одну порцию</span>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 36px', gap: 6, marginBottom: 6 }}>
             <span className="form-hint">Название</span>
             <span className="form-hint">Кол-во</span>

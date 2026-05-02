@@ -5,6 +5,15 @@ import { useAuth } from '../contexts/AuthContext'
 import { generateMenu, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
 
 const MEAL_LABELS = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
+
+function pluralizeMeals(n) {
+  const lastTwo = n % 100
+  const lastOne = n % 10
+  if (lastTwo >= 11 && lastTwo <= 14) return `${n} приёмов пищи`
+  if (lastOne === 1) return `${n} приём пищи`
+  if (lastOne >= 2 && lastOne <= 4) return `${n} приёма пищи`
+  return `${n} приёмов пищи`
+}
 const MEAT_LABELS = {
   poultry: 'Птица', fish: 'Рыба', seafood: 'Морепродукты',
   red_meat: 'Красное мясо', none: 'Без мяса'
@@ -296,6 +305,11 @@ export default function MenuPage() {
                           <div className="menu-meal-dish">{slot.dish.name}</div>
                           {slot.isLeftover && (
                             <div className="menu-meal-leftover">🍱 остатки</div>
+                          )}
+                          {!slot.isLeftover && slot.dish.servings_count > 1 && (
+                            <div style={{ fontSize: '0.72rem', color: '#3B6D11', marginTop: 2 }}>
+                              Хватит на {pluralizeMeals(slot.dish.servings_count)}
+                            </div>
                           )}
                           {slot.dish.recipe_link && !slot.isLeftover && (
                             <a

@@ -10,6 +10,15 @@ const MEAT_TYPE_LABELS = {
 }
 const DIFFICULTY_LABELS = { easy: 'Легко', medium: 'Средне', hard: 'Сложно' }
 
+function pluralizeMeals(n) {
+  const lastTwo = n % 100
+  const lastOne = n % 10
+  if (lastTwo >= 11 && lastTwo <= 14) return `${n} приёмов пищи`
+  if (lastOne === 1) return `${n} приём пищи`
+  if (lastOne >= 2 && lastOne <= 4) return `${n} приёма пищи`
+  return `${n} приёмов пищи`
+}
+
 function PlusIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -68,8 +77,6 @@ export default function DishesPage() {
     if (search && !d.name.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
-
-  const difficultyClass = (d) => `tag tag-difficulty-${d}`
 
   return (
     <div className="page-container">
@@ -130,22 +137,44 @@ export default function DishesPage() {
             <div key={dish.id} className="dish-card">
               <div className="dish-card-name">{dish.name}</div>
 
-              <div className="dish-card-tags">
+              {/* Meal type chips */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
                 {dish.meal_types.map(mt => (
-                  <span key={mt} className="tag tag-meal">{MEAL_TYPE_LABELS[mt]}</span>
+                  <span key={mt} style={{
+                    background: '#E6F1FB', color: '#185FA5',
+                    border: '0.5px solid rgba(133,183,235,0.5)',
+                    borderRadius: 20, fontSize: '0.76rem', padding: '2px 9px'
+                  }}>{MEAL_TYPE_LABELS[mt]}</span>
                 ))}
-                <span className="tag tag-meat">{MEAT_TYPE_LABELS[dish.meat_type] || dish.meat_type}</span>
-                <span className={difficultyClass(dish.difficulty)}>{DIFFICULTY_LABELS[dish.difficulty]}</span>
-                {dish.cooking_time && (
-                  <span className="tag tag-time">⏱ {dish.cooking_time} мин</span>
-                )}
-                {dish.servings_count > 1 && (
-                  <span className="tag tag-time">🍱 {dish.servings_count} порции</span>
-                )}
               </div>
 
+              {/* Divider */}
+              <div style={{ borderTop: '0.5px solid var(--color-border)', margin: '6px 0 8px' }} />
+
+              {/* Info table */}
+              <table style={{ width: '100%', fontSize: '0.78rem', borderSpacing: 0, marginBottom: 8 }}>
+                <tbody>
+                  <tr>
+                    <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0', width: '42%' }}>Мясо</td>
+                    <td style={{ color: 'var(--color-text)', padding: '2px 0' }}>{MEAT_TYPE_LABELS[dish.meat_type] || dish.meat_type}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0' }}>Сложность</td>
+                    <td style={{ color: 'var(--color-text)', padding: '2px 0' }}>
+                      {DIFFICULTY_LABELS[dish.difficulty]}{dish.cooking_time ? ` · ${dish.cooking_time} мин` : ''}
+                    </td>
+                  </tr>
+                  {dish.servings_count > 1 && (
+                    <tr>
+                      <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0' }}>Приёмов пищи</td>
+                      <td style={{ color: '#3B6D11', fontWeight: 500, padding: '2px 0' }}>{pluralizeMeals(dish.servings_count)}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+
               {dish.ingredients?.length > 0 && (
-                <div style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)', lineHeight: 1.5, marginBottom: 6 }}>
                   {dish.ingredients.slice(0, 4).map(ing => ing.name).join(', ')}
                   {dish.ingredients.length > 4 && ` +ещё ${dish.ingredients.length - 4}`}
                 </div>
