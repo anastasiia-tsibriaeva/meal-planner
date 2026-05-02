@@ -1,10 +1,15 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import { generateMenu, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
 
 const MEAL_LABELS = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
+const MEAT_LABELS = {
+  poultry: 'Птица', fish: 'Рыба', seafood: 'Морепродукты',
+  red_meat: 'Красное мясо', none: 'Без мяса'
+}
+const DIFFICULTY_LABELS = { easy: 'Лёгкая', medium: 'Средняя', hard: 'Сложная' }
 
 function pluralizeMeals(n) {
   const lastTwo = n % 100
@@ -14,24 +19,12 @@ function pluralizeMeals(n) {
   if (lastOne >= 2 && lastOne <= 4) return `${n} приёма пищи`
   return `${n} приёмов пищи`
 }
-const MEAT_LABELS = {
-  poultry: 'Птица', fish: 'Рыба', seafood: 'Морепродукты',
-  red_meat: 'Красное мясо', none: 'Без мяса'
-}
 
 function RefreshIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-    </svg>
-  )
-}
-
-function SaveIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
     </svg>
   )
 }
@@ -53,8 +46,8 @@ export default function MenuPage() {
   const [weekStart, setWeekStart] = useState(getCurrentWeekStart())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [swapModal, setSwapModal] = useState(null) // { dayIndex, mealType }
+  const [swapModal, setSwapModal] = useState(null)
+  const autoSaveTimer = useRef(null)
 
   useEffect(() => { loadDishes() }, [])
 
@@ -75,7 +68,6 @@ export default function MenuPage() {
     setLoading(true)
     const weekStartStr = weekStart.toISOString().slice(0, 10)
 
-    // Ищем сохранённое меню для этой недели
     const { data: existingMenu } = await supabase
       .from('weekly_menus')
       .select('id')
@@ -98,10 +90,10 @@ export default function MenuPage() {
       }
     }
 
-    // Генерируем новое меню
     if (dishes.length > 0) {
       const generated = generateMenu(dishes, weekStart)
       setMenu(generated)
+      scheduleAutoSave(generated)
     }
     setLoading(false)
   }, [dishes, weekStart, user.id])
@@ -128,26 +120,24 @@ export default function MenuPage() {
     return menu
   }
 
-  const regenerate = () => {
-    if (dishes.length === 0) return
-    const generated = generateMenu(dishes, weekStart)
-    setMenu(generated)
-    setSaved(false)
+  const scheduleAutoSave = (menuData) => {
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+    autoSaveTimer.current = setTimeout(() => {
+      persistMenu(menuData)
+    }, 800)
   }
 
-  const saveMenu = async () => {
-    if (!menu) return
+  const persistMenu = async (menuData) => {
+    if (!menuData) return
     setSaving(true)
     const weekStartStr = weekStart.toISOString().slice(0, 10)
 
-    // Удаляем старое меню для этой недели
     await supabase
       .from('weekly_menus')
       .delete()
       .eq('user_id', user.id)
       .eq('week_start_date', weekStartStr)
 
-    // Создаём новое
     const { data: newMenu } = await supabase
       .from('weekly_menus')
       .insert({ user_id: user.id, week_start_date: weekStartStr })
@@ -156,9 +146,8 @@ export default function MenuPage() {
 
     if (!newMenu) { setSaving(false); return }
 
-    // Вставляем слоты
     const slots = []
-    for (const day of menu) {
+    for (const day of menuData) {
       for (const mealType of ['breakfast', 'lunch', 'dinner']) {
         const slot = day[mealType]
         if (slot?.dish) {
@@ -175,8 +164,13 @@ export default function MenuPage() {
 
     await supabase.from('menu_slots').insert(slots)
     setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 3000)
+  }
+
+  const regenerate = () => {
+    if (dishes.length === 0) return
+    const generated = generateMenu(dishes, weekStart)
+    setMenu(generated)
+    scheduleAutoSave(generated)
   }
 
   const openSwapModal = (dayIndex, mealType) => {
@@ -186,23 +180,24 @@ export default function MenuPage() {
   const swapDish = (newDish) => {
     if (!swapModal) return
     const { dayIndex, mealType } = swapModal
-    setMenu(prev => prev.map(day =>
-      day.dayIndex === dayIndex
-        ? { ...day, [mealType]: { dish: newDish, isLeftover: false } }
-        : day
-    ))
+    setMenu(prev => {
+      const updated = prev.map(day =>
+        day.dayIndex === dayIndex
+          ? { ...day, [mealType]: { dish: newDish, isLeftover: false } }
+          : day
+      )
+      scheduleAutoSave(updated)
+      return updated
+    })
     setSwapModal(null)
-    setSaved(false)
   }
 
   const changeWeek = (delta) => {
     const newStart = new Date(weekStart)
     newStart.setDate(newStart.getDate() + delta * 7)
     setWeekStart(newStart)
-    setSaved(false)
   }
 
-  // Статистика разнообразия мяса
   const getMeatStats = () => {
     if (!menu) return []
     const used = new Set()
@@ -246,12 +241,14 @@ export default function MenuPage() {
     <div className="page-container">
       <div className="page-header">
         <h2 className="page-title">Меню на неделю</h2>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" onClick={regenerate} disabled={loading}>
-            <RefreshIcon /> Перегенерировать
-          </button>
-          <button className="btn btn-primary" onClick={saveMenu} disabled={saving || !menu}>
-            <SaveIcon /> {saving ? 'Сохраняем...' : saved ? '✓ Сохранено' : 'Сохранить'}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {saving && (
+            <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+              Сохраняем...
+            </span>
+          )}
+          <button className="btn btn-primary" onClick={regenerate} disabled={loading}>
+            <RefreshIcon /> Сгенерировать другое меню
           </button>
         </div>
       </div>
@@ -302,7 +299,15 @@ export default function MenuPage() {
                       <div className="menu-meal-label">{MEAL_LABELS[mealType]}</div>
                       {slot?.dish ? (
                         <>
-                          <div className="menu-meal-dish">{slot.dish.name}</div>
+                          <div
+                            className="menu-meal-dish"
+                            onClick={() => navigate(`/dishes/${slot.dish.id}`)}
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'transparent' }}
+                            onMouseEnter={e => e.currentTarget.style.textDecorationColor = 'currentColor'}
+                            onMouseLeave={e => e.currentTarget.style.textDecorationColor = 'transparent'}
+                          >
+                            {slot.dish.name}
+                          </div>
                           {slot.isLeftover && (
                             <div className="menu-meal-leftover">🍱 остатки</div>
                           )}
@@ -368,7 +373,7 @@ export default function MenuPage() {
                     <div>
                       <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{dish.name}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                        {MEAT_LABELS[dish.meat_type]} · {dish.difficulty === 'easy' ? 'Легко' : dish.difficulty === 'medium' ? 'Средне' : 'Сложно'}
+                        {MEAT_LABELS[dish.meat_type]} · {DIFFICULTY_LABELS[dish.difficulty]}
                         {dish.cooking_time ? ` · ${dish.cooking_time} мин` : ''}
                       </div>
                     </div>

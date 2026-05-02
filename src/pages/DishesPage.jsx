@@ -8,7 +8,7 @@ const MEAT_TYPE_LABELS = {
   poultry: 'Птица', fish: 'Рыба', seafood: 'Морепродукты',
   red_meat: 'Красное мясо', none: 'Без мяса'
 }
-const DIFFICULTY_LABELS = { easy: 'Легко', medium: 'Средне', hard: 'Сложно' }
+const DIFFICULTY_LABELS = { easy: 'Лёгкая', medium: 'Средняя', hard: 'Сложная' }
 
 function pluralizeMeals(n) {
   const lastTwo = n % 100
@@ -64,7 +64,8 @@ export default function DishesPage() {
     setLoading(false)
   }
 
-  const deleteDish = async (id) => {
+  const deleteDish = async (e, id) => {
+    e.stopPropagation()
     if (!confirm('Удалить это блюдо?')) return
     setDeletingId(id)
     await supabase.from('dishes').delete().eq('id', id)
@@ -134,17 +135,30 @@ export default function DishesPage() {
       ) : (
         <div className="dishes-grid">
           {filtered.map(dish => (
-            <div key={dish.id} className="dish-card">
+            <div
+              key={dish.id}
+              className="dish-card"
+              onClick={() => navigate(`/dishes/${dish.id}`)}
+              style={{ cursor: 'pointer' }}
+            >
               <div className="dish-card-name">{dish.name}</div>
 
               {/* Meal type chips */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
                 {dish.meal_types.map(mt => (
-                  <span key={mt} style={{
-                    background: '#E6F1FB', color: '#185FA5',
-                    border: '0.5px solid rgba(133,183,235,0.5)',
-                    borderRadius: 20, fontSize: '0.76rem', padding: '2px 9px'
-                  }}>{MEAL_TYPE_LABELS[mt]}</span>
+                  <span
+                    key={mt}
+                    style={{
+                      background: '#E6F1FB',
+                      color: '#185FA5',
+                      border: '0.5px solid rgba(133,183,235,0.5)',
+                      borderRadius: 20,
+                      fontSize: '0.76rem',
+                      padding: '2px 9px',
+                    }}
+                  >
+                    {MEAL_TYPE_LABELS[mt]}
+                  </span>
                 ))}
               </div>
 
@@ -156,23 +170,25 @@ export default function DishesPage() {
                 <tbody>
                   <tr>
                     <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0', width: '42%' }}>Мясо</td>
-                    <td style={{ color: 'var(--color-text)', padding: '2px 0' }}>{MEAT_TYPE_LABELS[dish.meat_type] || dish.meat_type}</td>
+                    <td>{MEAT_TYPE_LABELS[dish.meat_type]}</td>
                   </tr>
                   <tr>
                     <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0' }}>Сложность</td>
-                    <td style={{ color: 'var(--color-text)', padding: '2px 0' }}>
-                      {DIFFICULTY_LABELS[dish.difficulty]}{dish.cooking_time ? ` · ${dish.cooking_time} мин` : ''}
+                    <td>
+                      {DIFFICULTY_LABELS[dish.difficulty]}
+                      {dish.cooking_time ? ` · ${dish.cooking_time} мин` : ''}
                     </td>
                   </tr>
                   {dish.servings_count > 1 && (
                     <tr>
                       <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0' }}>Приёмов пищи</td>
-                      <td style={{ color: '#3B6D11', fontWeight: 500, padding: '2px 0' }}>{pluralizeMeals(dish.servings_count)}</td>
+                      <td style={{ color: '#3B6D11', fontWeight: 500 }}>{pluralizeMeals(dish.servings_count)}</td>
                     </tr>
                   )}
                 </tbody>
               </table>
 
+              {/* Ingredients preview */}
               {dish.ingredients?.length > 0 && (
                 <div style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)', lineHeight: 1.5, marginBottom: 6 }}>
                   {dish.ingredients.slice(0, 4).map(ing => ing.name).join(', ')}
@@ -180,12 +196,14 @@ export default function DishesPage() {
                 </div>
               )}
 
+              {/* Recipe link */}
               {dish.recipe_link && (
                 <a
                   href={dish.recipe_link}
                   target="_blank"
                   rel="noreferrer"
-                  style={{ fontSize: '0.82rem', color: 'var(--color-primary)', fontWeight: 500 }}
+                  onClick={e => e.stopPropagation()}
+                  style={{ fontSize: '0.78rem', color: 'var(--color-primary)', fontWeight: 500, display: 'block', marginBottom: 4 }}
                 >
                   🎬 Рецепт
                 </a>
@@ -194,14 +212,14 @@ export default function DishesPage() {
               <div className="dish-card-footer">
                 <button
                   className="btn btn-ghost btn-sm btn-icon"
-                  onClick={() => navigate(`/dishes/${dish.id}/edit`)}
+                  onClick={e => { e.stopPropagation(); navigate(`/dishes/${dish.id}/edit`) }}
                   title="Редактировать"
                 >
                   <EditIcon />
                 </button>
                 <button
                   className="btn btn-danger btn-sm btn-icon"
-                  onClick={() => deleteDish(dish.id)}
+                  onClick={e => deleteDish(e, dish.id)}
                   disabled={deletingId === dish.id}
                   title="Удалить"
                 >

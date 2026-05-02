@@ -18,9 +18,9 @@ const MEAT_TYPES = [
 ]
 
 const DIFFICULTY_OPTIONS = [
-  { key: 'easy', label: '✅ Легко' },
-  { key: 'medium', label: '🟡 Средне' },
-  { key: 'hard', label: '🔴 Сложно' },
+  { key: 'easy', label: '✅ Лёгкая' },
+  { key: 'medium', label: '🟡 Средняя' },
+  { key: 'hard', label: '🔴 Сложная' },
 ]
 
 function PlusIcon() {
@@ -142,7 +142,6 @@ export default function DishFormPage() {
     if (isEdit) {
       const { error: err } = await supabase.from('dishes').update(dishData).eq('id', id)
       if (err) { setError('Ошибка при сохранении.'); setSaving(false); return }
-      // Delete old ingredients
       await supabase.from('ingredients').delete().eq('dish_id', id)
     } else {
       const { data, error: err } = await supabase.from('dishes').insert(dishData).select().single()
@@ -150,7 +149,6 @@ export default function DishFormPage() {
       dishId = data.id
     }
 
-    // Insert ingredients
     const validIngredients = ingredients
       .filter(ing => ing.name.trim())
       .map((ing, idx) => ({
@@ -219,7 +217,7 @@ export default function DishFormPage() {
           </div>
         </div>
 
-        {/* Difficulty & time */}
+        {/* Difficulty & time & servings */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           <div className="form-group">
             <label className="form-label">Сложность</label>
@@ -257,10 +255,7 @@ export default function DishFormPage() {
 
         {/* Ingredients */}
         <div className="form-group">
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 }}>
-            <label className="form-label" style={{ margin: 0 }}>Ингредиенты *</label>
-            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontStyle: 'italic' }}>* на всё блюдо целиком, а не на одну порцию</span>
-          </div>
+          <label className="form-label">Ингредиенты (на всё блюдо целиком)</label>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 36px', gap: 6, marginBottom: 6 }}>
             <span className="form-hint">Название</span>
             <span className="form-hint">Кол-во</span>

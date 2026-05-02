@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import DishesPage from './pages/DishesPage'
 import DishFormPage from './pages/DishFormPage'
+import DishViewPage from './pages/DishViewPage'
 import MenuPage from './pages/MenuPage'
 import ShoppingPage from './pages/ShoppingPage'
 import SettingsPage from './pages/SettingsPage'
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="menu" element={<MenuPage />} />
         <Route path="dishes" element={<DishesPage />} />
         <Route path="dishes/new" element={<DishFormPage />} />
+        <Route path="dishes/:id" element={<DishViewPage />} />
         <Route path="dishes/:id/edit" element={<DishFormPage />} />
         <Route path="shopping" element={<ShoppingPage />} />
         <Route path="settings" element={<SettingsPage />} />
