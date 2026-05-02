@@ -186,6 +186,12 @@ export default function DishesPage() {
                       <td style={{ color: '#3B6D11', fontWeight: 500 }}>{pluralizeMeals(dish.servings_count)}</td>
                     </tr>
                   )}
+                  {dish.weekends_only && (
+                    <tr>
+                      <td style={{ color: 'var(--color-text-secondary)', padding: '2px 0' }}>Готовлю</td>
+                      <td style={{ color: 'var(--color-text-secondary)' }}>🗓 Только в выходные</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
 

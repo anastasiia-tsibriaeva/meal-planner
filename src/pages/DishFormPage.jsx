@@ -55,6 +55,7 @@ export default function DishFormPage() {
     difficulty: 'easy',
     cooking_time: '',
     servings_count: '1',
+    weekends_only: false,
     recipe_text: '',
     recipe_link: '',
   })
@@ -84,6 +85,7 @@ export default function DishFormPage() {
       difficulty: data.difficulty,
       cooking_time: data.cooking_time ?? '',
       servings_count: String(data.servings_count),
+      weekends_only: data.weekends_only ?? false,
       recipe_text: data.recipe_text ?? '',
       recipe_link: data.recipe_link ?? '',
     })
@@ -132,6 +134,7 @@ export default function DishFormPage() {
       difficulty: form.difficulty,
       cooking_time: form.cooking_time ? parseInt(form.cooking_time) : null,
       servings_count: parseInt(form.servings_count) || 1,
+      weekends_only: form.weekends_only,
       recipe_text: form.recipe_text.trim() || null,
       recipe_link: form.recipe_link.trim() || null,
       updated_at: new Date().toISOString(),
@@ -251,6 +254,24 @@ export default function DishFormPage() {
             />
             <span className="form-hint">Сколько раз хватит одного приготовления на всех</span>
           </div>
+        </div>
+
+        {/* Weekends only */}
+        <div className="form-group">
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', userSelect: 'none' }}
+          >
+            <input
+              type="checkbox"
+              checked={form.weekends_only}
+              onChange={e => setForm(f => ({ ...f, weekends_only: e.target.checked }))}
+              style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <span style={{ fontSize: '0.9rem' }}>Готовлю только в выходные</span>
+          </label>
+          <span className="form-hint" style={{ marginLeft: 26 }}>
+            Блюдо не будет ставиться как новое приготовление в будни — только остатки
+          </span>
         </div>
 
         {/* Ingredients */}

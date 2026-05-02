@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { generateMenu, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
+import { generateMenu, calculateCarryover, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
 
 const MEAL_LABELS = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
 const MEAT_LABELS = {
@@ -48,6 +48,8 @@ export default function MenuPage() {
   const [saving, setSaving] = useState(false)
   const [swapModal, setSwapModal] = useState(null)
   const autoSaveTimer = useRef(null)
+  // Сохраняем carryover чтобы кнопка "Сгенерировать другое меню" тоже его учитывала
+  const carryoverRef = useRef({})
 
   useEffect(() => { loadDishes() }, [])
 
@@ -68,6 +70,7 @@ export default function MenuPage() {
     setLoading(true)
     const weekStartStr = weekStart.toISOString().slice(0, 10)
 
+    // Проверяем, есть ли уже сохранённое меню на эту неделю
     const { data: existingMenu } = await supabase
       .from('weekly_menus')
       .select('id')
@@ -90,13 +93,42 @@ export default function MenuPage() {
       }
     }
 
+    // Меню нет — генерируем с учётом остатков из предыдущей недели
+    const carryover = await loadCarryoverFromPrevWeek()
+    carryoverRef.current = carryover
+
     if (dishes.length > 0) {
-      const generated = generateMenu(dishes, weekStart)
+      const generated = generateMenu(dishes, weekStart, carryover)
       setMenu(generated)
       scheduleAutoSave(generated)
     }
     setLoading(false)
   }, [dishes, weekStart, user.id])
+
+  /**
+   * Загружает слоты предыдущей недели и вычисляет переходящие остатки
+   */
+  const loadCarryoverFromPrevWeek = async () => {
+    const prevWeekStart = new Date(weekStart)
+    prevWeekStart.setDate(prevWeekStart.getDate() - 7)
+    const prevWeekStartStr = prevWeekStart.toISOString().slice(0, 10)
+
+    const { data: prevMenuData } = await supabase
+      .from('weekly_menus')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('week_start_date', prevWeekStartStr)
+      .single()
+
+    if (!prevMenuData) return {}
+
+    const { data: prevSlots } = await supabase
+      .from('menu_slots')
+      .select('*, dishes(*)')
+      .eq('menu_id', prevMenuData.id)
+
+    return calculateCarryover(prevSlots || [])
+  }
 
   function buildMenuFromSlots(slots) {
     const DAY_NAMES = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
@@ -168,7 +200,8 @@ export default function MenuPage() {
 
   const regenerate = () => {
     if (dishes.length === 0) return
-    const generated = generateMenu(dishes, weekStart)
+    // Передаём тот же carryover, что использовался при первой генерации этой недели
+    const generated = generateMenu(dishes, weekStart, carryoverRef.current)
     setMenu(generated)
     scheduleAutoSave(generated)
   }

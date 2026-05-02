@@ -56,7 +56,7 @@ export default function DishViewPage() {
   return (
     <div className="page-container" style={{ maxWidth: 640 }}>
 
-      {/* Header — only back button */}
+      {/* Header */}
       <div style={{ marginBottom: 20 }}>
         <button
           className="btn btn-ghost"
@@ -116,6 +116,14 @@ export default function DishViewPage() {
               </td>
             </tr>
           )}
+          {dish.weekends_only && (
+            <tr>
+              <td style={{ color: 'var(--color-text-secondary)', padding: '5px 0' }}>Приготовление</td>
+              <td style={{ padding: '5px 0', color: 'var(--color-text-secondary)' }}>
+                🗓 Только в выходные
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -169,12 +177,7 @@ export default function DishViewPage() {
           }}>
             Рецепт
           </div>
-          <p style={{
-            fontSize: '0.88rem',
-            lineHeight: 1.7,
-            margin: 0,
-            whiteSpace: 'pre-wrap',
-          }}>
+          <p style={{ fontSize: '0.88rem', lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap' }}>
             {dish.recipe_text}
           </p>
         </div>
