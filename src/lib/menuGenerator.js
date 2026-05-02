@@ -3,8 +3,10 @@
  * Правила:
  * - Завтраки: одно и то же блюдо 2 дня подряд
  * - Сложность: не более 1 сложного блюда за всю неделю (без ограничений по дням)
+ * - weekends_only: блюдо может стартовать только в выходной день (остатки идут на будни)
  * - Разнообразие мяса: стараемся охватить хотя бы 3 из 4 типов (птица, рыба, морепродукты, красное мясо)
  * - Batch cooking: блюдо с servings_count>1 покрывает несколько слотов
+ * - Переходящие остатки: если в конце предыдущей недели остались порции — они стартуют новую неделю
  * - Ингредиентная кластеризация: блюда с общими ингредиентами ставятся в один 3-дневный период
  */
 
@@ -32,12 +34,51 @@ function formatDate(date) {
 }
 
 /**
+ * Вычисляет переходящие остатки из слотов предыдущей недели.
+ * Возвращает { lunchLeftover } если в конце недели (сб/вс) оставались незакрытые порции.
+ * @param {Array} prevSlots - слоты предыдущей недели (с полем dishes)
+ */
+export function calculateCarryover(prevSlots) {
+  if (!prevSlots || prevSlots.length === 0) return {}
+
+  // Группируем по dish_id
+  const byDish = {}
+  for (const slot of prevSlots) {
+    const dish = slot.dishes
+    if (!dish || (dish.servings_count ?? 1) <= 1) continue
+    if (!byDish[slot.dish_id]) byDish[slot.dish_id] = { dish, slots: [] }
+    byDish[slot.dish_id].slots.push(slot)
+  }
+
+  // Ищем блюдо, у которого последний слот — в выходные (день ≥ 5),
+  // и при этом порций было больше, чем слотов в той неделе
+  for (const { dish, slots } of Object.values(byDish)) {
+    const lastDayIndex = Math.max(...slots.map(s => s.day_index))
+    if (lastDayIndex < 5) continue // не дотянулось до выходных — не переносим
+
+    const remaining = dish.servings_count - slots.length
+    if (remaining <= 0) continue
+
+    // Остатки идут в обеды следующей недели (как обычно делают leftover из ужина)
+    return { lunchLeftover: { dish, remaining } }
+  }
+
+  return {}
+}
+
+/**
  * Выбирает блюдо из кандидатов с учётом ограничений
  */
-function pickDish(candidates, { meatTypesUsed, usedDishIds, hardCountWeek = 0 }) {
+function pickDish(candidates, { isWeekend, meatTypesUsed, usedDishIds, hardCountWeek = 0 }) {
   if (!candidates || candidates.length === 0) return null
 
   let pool = [...candidates]
+
+  // Если будний день — убираем блюда, которые готовятся только в выходные
+  if (!isWeekend) {
+    const weekdayOk = pool.filter(d => !d.weekends_only)
+    if (weekdayOk.length > 0) pool = weekdayOk
+  }
 
   // Не более 1 сложного блюда за всю неделю
   if (hardCountWeek >= 1) {
@@ -63,9 +104,10 @@ function pickDish(candidates, { meatTypesUsed, usedDishIds, hardCountWeek = 0 })
  * Основная функция генерации меню
  * @param {Array} dishes - массив блюд с ингредиентами
  * @param {Date} weekStart - начало недели (понедельник)
+ * @param {Object} carryover - переходящие остатки из предыдущей недели
  * @returns {Array} - 7 элементов, каждый {dayIndex, dayName, date, isWeekend, breakfast, lunch, dinner}
  */
-export function generateMenu(dishes, weekStart) {
+export function generateMenu(dishes, weekStart, { lunchLeftover: initialLunchLeftover = null } = {}) {
   const breakfastDishes = dishes.filter(d => d.meal_types?.includes('breakfast'))
   const lunchDishes = dishes.filter(d => d.meal_types?.includes('lunch'))
   const dinnerDishes = dishes.filter(d => d.meal_types?.includes('dinner'))
@@ -103,8 +145,20 @@ export function generateMenu(dishes, weekStart) {
   }
 
   // ========== ОБЕДЫ И УЖИНЫ с batch cooking ==========
-  let lunchLeftover = null  // { dish, remaining }
+  // Стартуем с переходящими остатками из предыдущей недели (если есть)
+  let lunchLeftover = initialLunchLeftover
+    ? { dish: initialLunchLeftover.dish, remaining: initialLunchLeftover.remaining }
+    : null
   let dinnerLeftover = null
+
+  // Если есть переходящие остатки — добавляем это блюдо в "уже использованные",
+  // чтобы оно не дублировалось как свежее приготовление
+  if (lunchLeftover) {
+    usedDishIds.add(lunchLeftover.dish.id)
+    if (MEAT_TYPES_TRACKABLE.includes(lunchLeftover.dish.meat_type)) {
+      meatTypesUsed.add(lunchLeftover.dish.meat_type)
+    }
+  }
 
   for (let day = 0; day < 7; day++) {
     const isWknd = IS_WEEKEND[day]
@@ -116,7 +170,7 @@ export function generateMenu(dishes, weekStart) {
       if (lunchLeftover.remaining <= 0) lunchLeftover = null
     } else {
       const lunchPool = lunchDishes.length > 0 ? lunchDishes : lunchOrDinnerDishes
-      const dish = pickDish(lunchPool, { meatTypesUsed, usedDishIds, hardCountWeek })
+      const dish = pickDish(lunchPool, { isWeekend: isWknd, meatTypesUsed, usedDishIds, hardCountWeek })
       if (dish) {
         menu[day].lunch = { dish, isLeftover: false }
         if (MEAT_TYPES_TRACKABLE.includes(dish.meat_type)) meatTypesUsed.add(dish.meat_type)
@@ -135,7 +189,7 @@ export function generateMenu(dishes, weekStart) {
       if (dinnerLeftover.remaining <= 0) dinnerLeftover = null
     } else {
       const dinnerPool = dinnerDishes.length > 0 ? dinnerDishes : lunchOrDinnerDishes
-      const dish = pickDish(dinnerPool, { meatTypesUsed, usedDishIds, hardCountWeek })
+      const dish = pickDish(dinnerPool, { isWeekend: isWknd, meatTypesUsed, usedDishIds, hardCountWeek })
       if (dish) {
         menu[day].dinner = { dish, isLeftover: false }
         if (MEAT_TYPES_TRACKABLE.includes(dish.meat_type)) meatTypesUsed.add(dish.meat_type)
@@ -160,7 +214,6 @@ export function generateMenu(dishes, weekStart) {
 
 /**
  * Пост-обработка: кластеризация блюд по общим ингредиентам
- * Смотрим на 2 окна: [0-2] и [3-5], день 6 оставляем как есть
  */
 function clusterByIngredients(menu) {
   const cookingSlots = []
@@ -193,6 +246,9 @@ function clusterByIngredients(menu) {
         const targetSlot = menu[targetDay][b.mealType]
         if (!targetSlot || targetSlot.isLeftover) continue
 
+        // Не переставляем weekends_only блюдо на будний день
+        if (b.slot.dish?.weekends_only && !IS_WEEKEND[targetDay]) continue
+
         menu[b.day][b.mealType] = targetSlot
         menu[targetDay][b.mealType] = b.slot
         b.day = targetDay
@@ -208,9 +264,6 @@ function getSharedIngredients(dishA, dishB) {
   return dishB.ingredients.filter(i => namesA.has(i.name.toLowerCase().trim()))
 }
 
-/**
- * Возвращает начало текущей недели (понедельник)
- */
 export function getCurrentWeekStart() {
   const now = new Date()
   const day = now.getDay()
