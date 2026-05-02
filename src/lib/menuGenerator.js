@@ -35,7 +35,7 @@ function formatDate(date) {
 
 /**
  * Вычисляет переходящие остатки из слотов предыдущей недели.
- * Возвращает { lunchLeftover } если в конце недели (сб/вс) оставались незакрытые порции.
+ * Возвращает { lunchLeftover } если остались незакрытые порции любого batch-блюда.
  * @param {Array} prevSlots - слоты предыдущей недели (с полем dishes)
  */
 export function calculateCarryover(prevSlots) {
@@ -50,16 +50,12 @@ export function calculateCarryover(prevSlots) {
     byDish[slot.dish_id].slots.push(slot)
   }
 
-  // Ищем блюдо, у которого последний слот — в выходные (день ≥ 5),
-  // и при этом порций было больше, чем слотов в той неделе
+  // Ищем блюдо, у которого порций было больше, чем слотов за эту неделю
   for (const { dish, slots } of Object.values(byDish)) {
-    const lastDayIndex = Math.max(...slots.map(s => s.day_index))
-    if (lastDayIndex < 5) continue // не дотянулось до выходных — не переносим
-
     const remaining = dish.servings_count - slots.length
     if (remaining <= 0) continue
 
-    // Остатки идут в обеды следующей недели (как обычно делают leftover из ужина)
+    // Остатки идут в обеды следующей недели
     return { lunchLeftover: { dish, remaining } }
   }
 
