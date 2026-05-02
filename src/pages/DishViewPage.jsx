@@ -56,20 +56,14 @@ export default function DishViewPage() {
   return (
     <div className="page-container" style={{ maxWidth: 640 }}>
 
-      {/* Header */}
-      <div className="page-header" style={{ marginBottom: 20 }}>
+      {/* Header — only back button */}
+      <div style={{ marginBottom: 20 }}>
         <button
           className="btn btn-ghost"
           onClick={() => navigate('/dishes')}
           style={{ padding: '6px 10px', fontSize: '0.9rem' }}
         >
           ← Назад
-        </button>
-        <button
-          className="btn btn-primary"
-          onClick={() => navigate(`/dishes/${id}/edit`)}
-        >
-          Редактировать
         </button>
       </div>
 
@@ -200,7 +194,7 @@ export default function DishViewPage() {
         </div>
       )}
 
-      {/* Bottom edit button */}
+      {/* Bottom buttons */}
       <div style={{ borderTop: '0.5px solid var(--color-border)', paddingTop: 20, display: 'flex', gap: 12 }}>
         <button className="btn btn-primary" onClick={() => navigate(`/dishes/${id}/edit`)}>
           Редактировать блюдо

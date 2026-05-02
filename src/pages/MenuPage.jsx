@@ -247,7 +247,7 @@ export default function MenuPage() {
               Сохраняем...
             </span>
           )}
-          <button className="btn btn-primary" onClick={regenerate} disabled={loading}>
+          <button className="btn btn-secondary" onClick={regenerate} disabled={loading}>
             <RefreshIcon /> Сгенерировать другое меню
           </button>
         </div>
