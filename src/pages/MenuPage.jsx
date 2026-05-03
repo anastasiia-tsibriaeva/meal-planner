@@ -2,21 +2,23 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { generateMenu, calculateCarryover, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
+import { generateMenu, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
 
-const MEAL_LABELS = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
-const MEAT_LABELS = {
+const MEAL_LABELS       = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
+const MEAT_LABELS       = {
   poultry: 'Птица', fish: 'Рыба', seafood: 'Морепродукты',
-  red_meat: 'Красное мясо', none: 'Без мяса'
+  red_meat: 'Красное мясо', none: 'Без мяса',
 }
 const DIFFICULTY_LABELS = { easy: 'Лёгкая', medium: 'Средняя', hard: 'Сложная' }
+const DAY_NAMES         = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+const IS_WEEKEND        = [false, false, false, false, false, true, true]
+const MEAL_ORDER        = ['breakfast', 'lunch', 'dinner']
 
 function pluralizeMeals(n) {
-  const lastTwo = n % 100
-  const lastOne = n % 10
-  if (lastTwo >= 11 && lastTwo <= 14) return `${n} приёмов пищи`
-  if (lastOne === 1) return `${n} приём пищи`
-  if (lastOne >= 2 && lastOne <= 4) return `${n} приёма пищи`
+  const t = n % 100, o = n % 10
+  if (t >= 11 && t <= 14) return `${n} приёмов пищи`
+  if (o === 1) return `${n} приём пищи`
+  if (o >= 2 && o <= 4) return `${n} приёма пищи`
   return `${n} приёмов пищи`
 }
 
@@ -39,23 +41,36 @@ function SwapIcon() {
 }
 
 export default function MenuPage() {
-  const { user } = useAuth()
-  const navigate = useNavigate()
-  const [dishes, setDishes] = useState([])
-  const [menu, setMenu] = useState(null)
-  const [weekStart, setWeekStart] = useState(getCurrentWeekStart())
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [swapModal, setSwapModal] = useState(null)
+  const { user }    = useAuth()
+  const navigate    = useNavigate()
+  const [dishes, setDishes]                   = useState([])
+  const [menu, setMenu]                       = useState(null)
+  const [weekStart, setWeekStart]             = useState(getCurrentWeekStart())
+  const [activeDays, setActiveDays]           = useState([0, 1, 2, 3, 4, 5, 6])
+  const [settingsLoaded, setSettingsLoaded]   = useState(false)
+  const [loading, setLoading]                 = useState(true)
+  const [saving, setSaving]                   = useState(false)
+  const [swapModal, setSwapModal]             = useState(null)
   const autoSaveTimer = useRef(null)
-  // Сохраняем carryover чтобы кнопка "Сгенерировать другое меню" тоже его учитывала
-  const carryoverRef = useRef({})
-
-  useEffect(() => { loadDishes() }, [])
 
   useEffect(() => {
-    if (dishes.length > 0) loadOrGenerateMenu()
-  }, [dishes, weekStart])
+    loadDishes()
+    loadSettings()
+  }, [])
+
+  useEffect(() => {
+    if (dishes.length > 0 && settingsLoaded) loadOrGenerateMenu()
+  }, [dishes, weekStart, settingsLoaded])
+
+  const loadSettings = async () => {
+    const { data } = await supabase
+      .from('user_settings')
+      .select('active_days')
+      .eq('user_id', user.id)
+      .single()
+    if (data?.active_days) setActiveDays(data.active_days)
+    setSettingsLoaded(true)
+  }
 
   const loadDishes = async () => {
     const { data } = await supabase
@@ -70,7 +85,6 @@ export default function MenuPage() {
     setLoading(true)
     const weekStartStr = weekStart.toISOString().slice(0, 10)
 
-    // Проверяем, есть ли уже сохранённое меню на эту неделю
     const { data: existingMenu } = await supabase
       .from('weekly_menus')
       .select('id')
@@ -84,68 +98,36 @@ export default function MenuPage() {
         .select('*, dishes(*, ingredients(*))')
         .eq('menu_id', existingMenu.id)
         .order('day_index')
-
       if (slots) {
-        const menuData = buildMenuFromSlots(slots)
-        setMenu(menuData)
+        setMenu(buildMenuFromSlots(slots, weekStart, activeDays))
         setLoading(false)
         return
       }
     }
 
-    // Меню нет — генерируем с учётом остатков из предыдущей недели
-    const carryover = await loadCarryoverFromPrevWeek()
-    carryoverRef.current = carryover
-
     if (dishes.length > 0) {
-      const generated = generateMenu(dishes, weekStart, carryover)
+      const generated = generateMenu(dishes, weekStart, { activeDays })
       setMenu(generated)
       scheduleAutoSave(generated)
     }
     setLoading(false)
-  }, [dishes, weekStart, user.id])
+  }, [dishes, weekStart, user.id, activeDays])
 
-  /**
-   * Загружает слоты предыдущей недели и вычисляет переходящие остатки
-   */
-  const loadCarryoverFromPrevWeek = async () => {
-    const prevWeekStart = new Date(weekStart)
-    prevWeekStart.setDate(prevWeekStart.getDate() - 7)
-    const prevWeekStartStr = prevWeekStart.toISOString().slice(0, 10)
-
-    const { data: prevMenuData } = await supabase
-      .from('weekly_menus')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('week_start_date', prevWeekStartStr)
-      .single()
-
-    if (!prevMenuData) return {}
-
-    const { data: prevSlots } = await supabase
-      .from('menu_slots')
-      .select('*, dishes(*)')
-      .eq('menu_id', prevMenuData.id)
-
-    return calculateCarryover(prevSlots || [])
-  }
-
-  function buildMenuFromSlots(slots) {
-    const DAY_NAMES = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-    const IS_WEEKEND = [false, false, false, false, false, true, true]
+  function buildMenuFromSlots(slots, weekStart, activeDays) {
     const menu = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(weekStart); d.setDate(d.getDate() + i)
       return {
         dayIndex: i, dayName: DAY_NAMES[i], isWeekend: IS_WEEKEND[i],
+        isActive: activeDays.includes(i),
         date: d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }),
-        breakfast: null, lunch: null, dinner: null
+        breakfast: null, lunch: null, dinner: null,
       }
     })
     for (const slot of slots) {
       if (slot.day_index >= 0 && slot.day_index < 7) {
         menu[slot.day_index][slot.meal_type] = {
           dish: slot.dishes,
-          isLeftover: slot.is_leftover
+          isLeftover: slot.is_leftover,
         }
       }
     }
@@ -154,9 +136,7 @@ export default function MenuPage() {
 
   const scheduleAutoSave = (menuData) => {
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-    autoSaveTimer.current = setTimeout(() => {
-      persistMenu(menuData)
-    }, 800)
+    autoSaveTimer.current = setTimeout(() => persistMenu(menuData), 800)
   }
 
   const persistMenu = async (menuData) => {
@@ -180,45 +160,62 @@ export default function MenuPage() {
 
     const slots = []
     for (const day of menuData) {
-      for (const mealType of ['breakfast', 'lunch', 'dinner']) {
+      for (const mealType of MEAL_ORDER) {
         const slot = day[mealType]
         if (slot?.dish) {
           slots.push({
-            menu_id: newMenu.id,
-            day_index: day.dayIndex,
-            meal_type: mealType,
-            dish_id: slot.dish.id,
+            menu_id:    newMenu.id,
+            day_index:  day.dayIndex,
+            meal_type:  mealType,
+            dish_id:    slot.dish.id,
             is_leftover: slot.isLeftover,
           })
         }
       }
     }
-
     await supabase.from('menu_slots').insert(slots)
     setSaving(false)
   }
 
   const regenerate = () => {
     if (dishes.length === 0) return
-    // Передаём тот же carryover, что использовался при первой генерации этой недели
-    const generated = generateMenu(dishes, weekStart, carryoverRef.current)
+    const generated = generateMenu(dishes, weekStart, { activeDays })
     setMenu(generated)
     scheduleAutoSave(generated)
   }
 
-  const openSwapModal = (dayIndex, mealType) => {
-    setSwapModal({ dayIndex, mealType })
+  const openSwapModal = (dayIndex, mealType, isLeftoverSlot = false) => {
+    setSwapModal({ dayIndex, mealType, isLeftoverSlot })
   }
 
   const swapDish = (newDish) => {
     if (!swapModal) return
-    const { dayIndex, mealType } = swapModal
+    const { dayIndex, mealType, isLeftoverSlot } = swapModal
+
     setMenu(prev => {
-      const updated = prev.map(day =>
+      const originalDish = prev.find(d => d.dayIndex === dayIndex)?.[mealType]?.dish
+
+      let updated = prev.map(day =>
         day.dayIndex === dayIndex
           ? { ...day, [mealType]: { dish: newDish, isLeftover: false } }
           : day
       )
+
+      // Каскадно обновляем остатки, если заменили свежий слот
+      if (!isLeftoverSlot && originalDish) {
+        updated = updated.map(day => {
+          let changed = false
+          const newDay = { ...day }
+          for (const mt of MEAL_ORDER) {
+            if (newDay[mt]?.isLeftover && newDay[mt]?.dish?.id === originalDish.id) {
+              newDay[mt] = { dish: newDish, isLeftover: true }
+              changed = true
+            }
+          }
+          return changed ? newDay : day
+        })
+      }
+
       scheduleAutoSave(updated)
       return updated
     })
@@ -235,7 +232,7 @@ export default function MenuPage() {
     if (!menu) return []
     const used = new Set()
     for (const day of menu) {
-      for (const mealType of ['breakfast', 'lunch', 'dinner']) {
+      for (const mealType of MEAL_ORDER) {
         const slot = day[mealType]
         if (slot?.dish?.meat_type && slot.dish.meat_type !== 'none' && !slot.isLeftover) {
           used.add(slot.dish.meat_type)
@@ -245,8 +242,7 @@ export default function MenuPage() {
     return Array.from(used)
   }
 
-  const meatStats = getMeatStats()
-
+  const meatStats      = getMeatStats()
   const swapCandidates = swapModal
     ? dishes.filter(d => d.meal_types?.includes(swapModal.mealType))
     : []
@@ -286,14 +282,12 @@ export default function MenuPage() {
         </div>
       </div>
 
-      {/* Week navigation */}
       <div className="week-nav">
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => changeWeek(-1)}>←</button>
         <span className="week-nav-label">{getWeekLabel(weekStart)}</span>
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => changeWeek(1)}>→</button>
       </div>
 
-      {/* Meat diversity stats */}
       {menu && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
           <span className="text-sm text-secondary">Разнообразие мяса:</span>
@@ -303,8 +297,8 @@ export default function MenuPage() {
               className="tag"
               style={{
                 background: meatStats.includes(type) ? 'var(--color-primary-light)' : 'var(--color-bg)',
-                color: meatStats.includes(type) ? 'var(--color-primary)' : 'var(--color-text-secondary)',
-                border: `1px solid ${meatStats.includes(type) ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                color:      meatStats.includes(type) ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                border:     `1px solid ${meatStats.includes(type) ? 'var(--color-primary)' : 'var(--color-border)'}`,
               }}
             >
               {meatStats.includes(type) ? '✓' : '○'} {MEAT_LABELS[type]}
@@ -313,19 +307,28 @@ export default function MenuPage() {
         </div>
       )}
 
-      {/* Menu grid */}
       {menu && (
         <div className="menu-grid">
           {menu.map(day => (
-            <div key={day.dayIndex} className="menu-day-card">
+            <div
+              key={day.dayIndex}
+              className="menu-day-card"
+              style={!day.isActive ? { opacity: 0.55 } : undefined}
+            >
               <div className="menu-day-header">
                 <span className="menu-day-name">
                   {day.isWeekend ? '🌅 ' : ''}{day.dayName}
+                  {!day.isActive && (
+                    <span style={{ marginLeft: 6, fontSize: '0.7rem', color: 'var(--color-text-secondary)', fontWeight: 400 }}>
+                      свободный
+                    </span>
+                  )}
                 </span>
                 <span className="menu-day-date">{day.date}</span>
               </div>
+
               <div className="menu-meals">
-                {['breakfast', 'lunch', 'dinner'].map(mealType => {
+                {MEAL_ORDER.map(mealType => {
                   const slot = day[mealType]
                   return (
                     <div key={mealType} className="menu-meal">
@@ -359,19 +362,26 @@ export default function MenuPage() {
                               🎬 рецепт
                             </a>
                           )}
-                          {!slot.isLeftover && (
-                            <button
-                              className="menu-meal-change btn btn-ghost btn-sm"
-                              onClick={() => openSwapModal(day.dayIndex, mealType)}
-                              title="Заменить блюдо"
-                              style={{ marginTop: 4, fontSize: '0.75rem', padding: '3px 8px' }}
-                            >
-                              <SwapIcon /> заменить
-                            </button>
-                          )}
+                          <button
+                            className="menu-meal-change btn btn-ghost btn-sm"
+                            onClick={() => openSwapModal(day.dayIndex, mealType, slot.isLeftover)}
+                            title="Заменить блюдо"
+                            style={{ marginTop: 4, fontSize: '0.75rem', padding: '3px 8px' }}
+                          >
+                            <SwapIcon /> заменить
+                          </button>
                         </>
                       ) : (
-                        <div className="menu-meal-empty">не задано</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <div className="menu-meal-empty">не задано</div>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => openSwapModal(day.dayIndex, mealType, false)}
+                            style={{ fontSize: '0.72rem', padding: '2px 8px', marginTop: 2 }}
+                          >
+                            + добавить
+                          </button>
+                        </div>
                       )}
                     </div>
                   )
@@ -382,16 +392,22 @@ export default function MenuPage() {
         </div>
       )}
 
-      {/* Swap modal */}
       {swapModal && (
         <div className="modal-overlay" onClick={() => setSwapModal(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-title">
-                Заменить {MEAL_LABELS[swapModal.mealType].toLowerCase()}
+                {swapModal.isLeftoverSlot
+                  ? `Заменить ${MEAL_LABELS[swapModal.mealType].toLowerCase()} (только этот день)`
+                  : `Заменить ${MEAL_LABELS[swapModal.mealType].toLowerCase()}`}
               </span>
               <button className="btn btn-ghost btn-icon" onClick={() => setSwapModal(null)}>✕</button>
             </div>
+            {!swapModal.isLeftoverSlot && (
+              <p style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)', margin: '0 0 10px' }}>
+                Остатки этого блюда в других днях тоже обновятся
+              </p>
+            )}
             {swapCandidates.length === 0 ? (
               <p className="text-sm text-secondary">Нет блюд для этого типа приёма пищи</p>
             ) : (

@@ -1,95 +1,59 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { useNavigate } from 'react-router-dom'
+
+const DAY_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+const DAY_FULL  = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+const ALL_DAYS  = [0, 1, 2, 3, 4, 5, 6]
+
+function getHintText(activeDays) {
+  const offDays = ALL_DAYS.filter(d => !activeDays.includes(d))
+  if (offDays.length === 0) return 'Все дни активны — меню генерируется на всю неделю.'
+
+  const names = offDays.map(d => DAY_FULL[d])
+  const namesStr = names.length === 1
+    ? names[0]
+    : names.slice(0, -1).join(', ') + ' и ' + names[names.length - 1]
+
+  if (names.length === 1) {
+    return `${namesStr} не будет заполняться блюдами при генерации, но останется в меню как пустой день — можно добавить что-то вручную.`
+  }
+  return `${namesStr} не будут заполняться блюдами при генерации, но останутся в меню как пустые дни — можно добавить что-то вручную.`
+}
 
 export default function SettingsPage() {
   const { user, signOut } = useAuth()
-  const navigate = useNavigate()
-  const [pantryItems, setPantryItems] = useState([])
-  const [newItem, setNewItem] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [exportLoading, setExportLoading] = useState(false)
+  const [activeDays, setActiveDays] = useState(ALL_DAYS)
+  const [saving, setSaving]         = useState(false)
+  const [loading, setLoading]       = useState(true)
 
-  useEffect(() => {
-    loadSettings()
-  }, [])
+  useEffect(() => { loadSettings() }, [])
 
   const loadSettings = async () => {
     const { data } = await supabase
       .from('user_settings')
-      .select('pantry_items')
+      .select('active_days')
       .eq('user_id', user.id)
       .single()
-
-    if (data) {
-      setPantryItems(data.pantry_items || [])
-    } else {
-      // Create default settings if not exist
-      await supabase.from('user_settings').insert({
-        user_id: user.id,
-        pantry_items: ['соль', 'чёрный перец', 'перец молотый']
-      })
-      setPantryItems(['соль', 'чёрный перец', 'перец молотый'])
-    }
+    if (data?.active_days) setActiveDays(data.active_days)
     setLoading(false)
   }
 
-  const addItem = () => {
-    const trimmed = newItem.trim().toLowerCase()
-    if (!trimmed || pantryItems.includes(trimmed)) {
-      setNewItem('')
-      return
-    }
-    setPantryItems(prev => [...prev, trimmed])
-    setNewItem('')
-  }
+  const toggleDay = async (day) => {
+    const isActive = activeDays.includes(day)
+    // Не разрешаем отключить последний активный день
+    if (isActive && activeDays.length <= 1) return
 
-  const removeItem = (item) => {
-    setPantryItems(prev => prev.filter(i => i !== item))
-  }
+    const newDays = isActive
+      ? activeDays.filter(d => d !== day)
+      : [...activeDays, day].sort((a, b) => a - b)
 
-  const saveSettings = async () => {
+    setActiveDays(newDays)
     setSaving(true)
     await supabase
       .from('user_settings')
-      .upsert({ user_id: user.id, pantry_items: pantryItems })
+      .upsert({ user_id: user.id, active_days: newDays, updated_at: new Date().toISOString() })
     setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
-  }
-
-  const exportData = async () => {
-    setExportLoading(true)
-    try {
-      const { data: dishes } = await supabase
-        .from('dishes')
-        .select('*, ingredients(*)')
-        .eq('user_id', user.id)
-
-      const exportObj = {
-        exportDate: new Date().toISOString(),
-        dishes: dishes || [],
-        pantryItems,
-      }
-
-      const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `menu-planner-export-${new Date().toISOString().slice(0, 10)}.json`
-      a.click()
-      URL.revokeObjectURL(url)
-    } finally {
-      setExportLoading(false)
-    }
-  }
-
-  const handleSignOut = async () => {
-    await signOut()
-    navigate('/login')
   }
 
   if (loading) return (
@@ -99,74 +63,52 @@ export default function SettingsPage() {
   )
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <h2 className="page-title">Настройки</h2>
+    <div className="page-container" style={{ maxWidth: 480 }}>
+      <h2 className="page-title">Настройки</h2>
+
+      {/* Email */}
+      <div className="form-group">
+        <label className="form-label">Электронная почта</label>
+        <input className="form-input" value={user.email} disabled />
       </div>
 
-      {/* Pantry items */}
-      <div className="settings-section">
-        <div className="settings-section-title">🧂 Всегда есть дома</div>
-        <p className="text-sm text-secondary" style={{ marginBottom: 16 }}>
-          Эти продукты не попадают в список покупок — они всегда есть у тебя дома.
-        </p>
-
-        <div className="pantry-tags">
-          {pantryItems.map(item => (
-            <span key={item} className="pantry-tag">
-              {item}
-              <button className="pantry-tag-remove" onClick={() => removeItem(item)} title="Удалить">×</button>
-            </span>
-          ))}
-          {pantryItems.length === 0 && (
-            <span className="text-sm text-secondary">Список пуст</span>
-          )}
+      {/* Дни генерации */}
+      <div className="form-group">
+        <label className="form-label">Дни генерации меню</label>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+          {ALL_DAYS.map(day => {
+            const active = activeDays.includes(day)
+            return (
+              <button
+                key={day}
+                onClick={() => toggleDay(day)}
+                style={{
+                  width: 42, height: 42,
+                  borderRadius: '50%',
+                  border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  background: active ? 'var(--color-primary-light)' : 'var(--color-bg)',
+                  color: active ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                  fontSize: '0.8rem', fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {DAY_SHORT[day]}
+              </button>
+            )
+          })}
         </div>
-
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          <input
-            type="text"
-            className="form-input"
-            placeholder="Добавить продукт..."
-            value={newItem}
-            onChange={e => setNewItem(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && addItem()}
-            style={{ flex: 1 }}
-          />
-          <button className="btn btn-secondary" onClick={addItem}>Добавить</button>
-        </div>
-
-        <button
-          className="btn btn-primary"
-          onClick={saveSettings}
-          disabled={saving}
-        >
-          {saving ? 'Сохраняем...' : saved ? '✓ Сохранено' : 'Сохранить'}
-        </button>
+        <p className="form-hint">{getHintText(activeDays)}</p>
+        {saving && (
+          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+            Сохраняем...
+          </span>
+        )}
       </div>
 
-      <hr className="divider" />
-
-      {/* Export */}
-      <div className="settings-section">
-        <div className="settings-section-title">📦 Экспорт данных</div>
-        <p className="text-sm text-secondary" style={{ marginBottom: 16 }}>
-          Скачай все свои блюда и настройки в виде файла — для резервной копии.
-        </p>
-        <button className="btn btn-ghost" onClick={exportData} disabled={exportLoading}>
-          {exportLoading ? 'Готовим файл...' : '⬇ Скачать данные (JSON)'}
-        </button>
-      </div>
-
-      <hr className="divider" />
-
-      {/* Account */}
-      <div className="settings-section">
-        <div className="settings-section-title">👤 Аккаунт</div>
-        <p className="text-sm text-secondary" style={{ marginBottom: 16 }}>
-          Вы вошли как: <strong>{user?.email}</strong>
-        </p>
-        <button className="btn btn-danger" onClick={handleSignOut}>
+      {/* Выйти */}
+      <div style={{ borderTop: '0.5px solid var(--color-border)', paddingTop: 24, marginTop: 8 }}>
+        <button className="btn btn-ghost" onClick={signOut}>
           Выйти из аккаунта
         </button>
       </div>
