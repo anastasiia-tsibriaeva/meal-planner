@@ -26,15 +26,21 @@ export default function SettingsPage() {
   const [activeDays, setActiveDays] = useState(ALL_DAYS)
   const [saving, setSaving]         = useState(false)
   const [loading, setLoading]       = useState(true)
+  const [saveError, setSaveError]   = useState('')
 
   useEffect(() => { loadSettings() }, [])
 
   const loadSettings = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('user_settings')
       .select('active_days')
       .eq('user_id', user.id)
       .single()
+
+    // PGRST116 = no rows found (первый вход, строки ещё нет) — это нормально
+    if (error && error.code !== 'PGRST116') {
+      console.error('loadSettings error:', error)
+    }
     if (data?.active_days) setActiveDays(data.active_days)
     setLoading(false)
   }
@@ -48,11 +54,24 @@ export default function SettingsPage() {
       ? activeDays.filter(d => d !== day)
       : [...activeDays, day].sort((a, b) => a - b)
 
+    const prevDays = activeDays
+    setSaveError('')
     setActiveDays(newDays)
     setSaving(true)
-    await supabase
+
+    const { error } = await supabase
       .from('user_settings')
-      .upsert({ user_id: user.id, active_days: newDays, updated_at: new Date().toISOString() })
+      .upsert(
+        { user_id: user.id, active_days: newDays, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+
+    if (error) {
+      console.error('toggleDay save error:', error)
+      setActiveDays(prevDays) // откатываем визуальное состояние
+      setSaveError('Не удалось сохранить. Проверь, запущена ли миграция в Supabase.')
+    }
+
     setSaving(false)
   }
 
@@ -104,10 +123,15 @@ export default function SettingsPage() {
             Сохраняем...
           </span>
         )}
+        {saveError && (
+          <span style={{ fontSize: '0.8rem', color: '#c0392b', display: 'block', marginTop: 6 }}>
+            ⚠️ {saveError}
+          </span>
+        )}
       </div>
 
-      {/* Выйти */}
-      <div style={{ borderTop: '0.5px solid var(--color-border)', paddingTop: 24, marginTop: 8 }}>
+      {/* Выйти — далеко внизу, чтобы не путалось с кнопкой сохранения */}
+      <div style={{ borderTop: '0.5px solid var(--color-border)', paddingTop: 24, marginTop: 80 }}>
         <button className="btn btn-ghost" onClick={signOut}>
           Выйти из аккаунта
         </button>

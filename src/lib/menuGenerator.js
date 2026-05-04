@@ -37,43 +37,35 @@ function formatDate(date) {
 
 /**
  * Выбирает блюдо из кандидатов с учётом всех ограничений.
- * slotsRemaining — сколько слотов осталось заполнить; используется
- * чтобы предпочесть блюда, чьи порции вписываются без остатка.
  */
 function pickDish(candidates, { isWeekend, meatTypesUsed, usedDishIds, hardCountWeek = 0, slotsRemaining = Infinity }) {
   if (!candidates || candidates.length === 0) return null
 
   let pool = [...candidates]
 
-  // weekends_only: не стартуем в будни
   if (!isWeekend) {
     const weekdayOk = pool.filter(d => !d.weekends_only)
     if (weekdayOk.length > 0) pool = weekdayOk
   }
 
-  // Не более 1 сложного блюда за неделю
   if (hardCountWeek >= 1) {
     const notHard = pool.filter(d => d.difficulty !== 'hard')
     if (notHard.length > 0) pool = notHard
   }
 
-  // Предпочитаем типы мяса, которые ещё не встречались
   const missingTypes = MEAT_TYPES_TRACKABLE.filter(t => !meatTypesUsed.has(t))
   if (missingTypes.length > 0) {
     const preferred = pool.filter(d => missingTypes.includes(d.meat_type))
     if (preferred.length > 0) pool = preferred
   }
 
-  // Предпочитаем блюда, не использованные на этой неделе
   const notUsed = pool.filter(d => !usedDishIds.has(d.id))
   if (notUsed.length > 0) pool = notUsed
 
-  // Предпочитаем блюда, чьи порции (с учётом 2↔3 flex) вписываются в оставшиеся слоты
   if (slotsRemaining !== Infinity && slotsRemaining > 0) {
     const fits = pool.filter(d => {
       const s = d.servings_count ?? 1
       if (s <= slotsRemaining) return true
-      // 2↔3 flex: можно уменьшить 3→2
       if (s === 3 && slotsRemaining >= 2) return true
       return false
     })
@@ -84,31 +76,26 @@ function pickDish(candidates, { isWeekend, meatTypesUsed, usedDishIds, hardCount
 }
 
 /**
- * Вычисляет эффективное количество порций блюда с учётом 2↔3 flex
- * и количества оставшихся слотов.
+ * Вычисляет эффективное количество порций блюда с учётом 2↔3 flex.
  */
 function getEffectiveServings(dish, remaining) {
   const s = dish.servings_count ?? 1
 
   if (s !== 2 && s !== 3) return Math.min(s, remaining)
 
-  // Для блюд с 2 или 3 порциями выбираем лучшее значение из {2, 3}
   if (remaining <= 1) return 1
   if (remaining === 2) return 2
   if (remaining === 3) return 3
 
-  // remaining >= 4: выбираем то, что даёт более «ровный» остаток
   const rem2 = remaining - 2
   const rem3 = remaining - 3
-  // Предпочитаем вариант, после которого остаток кратен 2 или 3
   const score2 = rem2 % 3 === 0 ? 0 : (rem2 % 2 === 0 ? 1 : 2)
   const score3 = rem3 >= 0 ? (rem3 % 2 === 0 ? 0 : (rem3 % 3 === 0 ? 1 : 2)) : 99
   return score3 <= score2 ? 3 : 2
 }
 
 /**
- * Планирует последовательность блюд для одного типа приёма пищи
- * так, чтобы суммарные порции = activeDays.length (без остатков).
+ * Планирует последовательность блюд для одного типа приёма пищи.
  * Возвращает { plan: [{dish, servings}], usedDishIds, meatTypesUsed, hardCountWeek }
  */
 function planMealSlots(dishes, activeDays, { meatTypesUsed, usedDishIds, hardCountWeek }) {
@@ -153,22 +140,19 @@ function planMealSlots(dishes, activeDays, { meatTypesUsed, usedDishIds, hardCou
 }
 
 /**
- * Разворачивает план [{dish, servings}] в очередь слотов
- * [{dish, isLeftover}]
+ * Разворачивает план [{dish, servings}] в очередь слотов [{dish, isLeftover, servingsUsed}].
+ * servingsUsed — реальное количество порций этого конкретного приготовления
+ * (может отличаться от dish.servings_count из-за 2↔3 flex).
  */
 function expandPlan(plan) {
   return plan.flatMap(({ dish, servings }) => [
-    { dish, isLeftover: false },
-    ...Array.from({ length: servings - 1 }, () => ({ dish, isLeftover: true })),
+    { dish, isLeftover: false, servingsUsed: servings },
+    ...Array.from({ length: servings - 1 }, () => ({ dish, isLeftover: true, servingsUsed: servings })),
   ])
 }
 
 /**
  * Основная функция генерации меню.
- * @param {Array}  dishes     — блюда с ингредиентами
- * @param {Date}   weekStart  — начало недели (понедельник)
- * @param {Object} options
- * @param {number[]} options.activeDays — индексы активных дней (0=Пн … 6=Вс)
  */
 export function generateMenu(dishes, weekStart, { activeDays = [0, 1, 2, 3, 4, 5, 6] } = {}) {
   const breakfastDishes    = dishes.filter(d => d.meal_types?.includes('breakfast'))
@@ -178,7 +162,6 @@ export function generateMenu(dishes, weekStart, { activeDays = [0, 1, 2, 3, 4, 5
     d.meal_types?.includes('lunch') || d.meal_types?.includes('dinner')
   )
 
-  // Инициализируем 7 дней; неактивные дни помечаем isActive: false
   const menu = Array.from({ length: 7 }, (_, i) => ({
     dayIndex:  i,
     dayName:   DAY_NAMES[i],
@@ -198,10 +181,12 @@ export function generateMenu(dishes, weekStart, { activeDays = [0, 1, 2, 3, 4, 5
   if (breakfastDishes.length > 0) {
     const shuffled = shuffle(breakfastDishes)
     activeDays.forEach((dayIdx, i) => {
-      const dishIdx  = Math.floor(i / 2) % shuffled.length
-      const dish     = shuffled[dishIdx]
+      const dishIdx    = Math.floor(i / 2) % shuffled.length
+      const dish       = shuffled[dishIdx]
       const isLeftover = i % 2 === 1
-      menu[dayIdx].breakfast = { dish, isLeftover }
+      // Для завтраков считаем реальное число дней этого приготовления
+      const servingsUsed = (!isLeftover && i + 1 < activeDays.length) ? 2 : isLeftover ? 2 : 1
+      menu[dayIdx].breakfast = { dish, isLeftover, servingsUsed }
       if (MEAT_TYPES_TRACKABLE.includes(dish.meat_type)) meatTypesUsed.add(dish.meat_type)
     })
   }
@@ -241,7 +226,6 @@ export function generateMenu(dishes, weekStart, { activeDays = [0, 1, 2, 3, 4, 5
 
 /**
  * Пост-обработка: блюда с общими ингредиентами сдвигаем в один 3-дневный период.
- * Работает только с активными днями, у которых есть ингредиенты.
  */
 function clusterByIngredients(menu) {
   const cookingSlots = []
@@ -260,7 +244,6 @@ function clusterByIngredients(menu) {
       const a = cookingSlots[i]
       const b = cookingSlots[j]
       if (Math.floor(a.day / 3) === Math.floor(b.day / 3)) continue
-
       if (getSharedIngredients(a.slot.dish, b.slot.dish).length === 0) continue
 
       const targetWindow = Math.floor(a.day / 3)
@@ -273,7 +256,7 @@ function clusterByIngredients(menu) {
         if (!targetSlot || targetSlot.isLeftover) continue
         if (b.slot.dish?.weekends_only && !IS_WEEKEND[targetDay]) continue
 
-        menu[b.day][b.mealType]    = targetSlot
+        menu[b.day][b.mealType]     = targetSlot
         menu[targetDay][b.mealType] = b.slot
         b.day = targetDay
         break

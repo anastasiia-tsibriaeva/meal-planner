@@ -22,6 +22,18 @@ function pluralizeMeals(n) {
   return `${n} приёмов пищи`
 }
 
+/**
+ * Возвращает строку коэффициента масштабирования (например «×2/3»)
+ * или null, если масштаб не изменился.
+ */
+function formatScale(used, total) {
+  if (!used || !total || used === total) return null
+  function gcd(a, b) { return b === 0 ? a : gcd(b, a % b) }
+  const g = gcd(used, total)
+  const num = used / g, den = total / g
+  return den === 1 ? `×${num}` : `×${num}/${den}`
+}
+
 function RefreshIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -51,6 +63,7 @@ export default function MenuPage() {
   const [loading, setLoading]                 = useState(true)
   const [saving, setSaving]                   = useState(false)
   const [swapModal, setSwapModal]             = useState(null)
+  const [swapSearch, setSwapSearch]           = useState('')
   const autoSaveTimer = useRef(null)
 
   useEffect(() => {
@@ -125,9 +138,13 @@ export default function MenuPage() {
     })
     for (const slot of slots) {
       if (slot.day_index >= 0 && slot.day_index < 7) {
-        menu[slot.day_index][slot.meal_type] = {
-          dish: slot.dishes,
-          isLeftover: slot.is_leftover,
+        // Блюда ставим только для активных дней — неактивные остаются пустыми
+        if (activeDays.includes(slot.day_index)) {
+          menu[slot.day_index][slot.meal_type] = {
+            dish:         slot.dishes,
+            isLeftover:   slot.is_leftover,
+            servingsUsed: slot.servings_used ?? slot.dishes?.servings_count,
+          }
         }
       }
     }
@@ -164,11 +181,12 @@ export default function MenuPage() {
         const slot = day[mealType]
         if (slot?.dish) {
           slots.push({
-            menu_id:    newMenu.id,
-            day_index:  day.dayIndex,
-            meal_type:  mealType,
-            dish_id:    slot.dish.id,
-            is_leftover: slot.isLeftover,
+            menu_id:      newMenu.id,
+            day_index:    day.dayIndex,
+            meal_type:    mealType,
+            dish_id:      slot.dish.id,
+            is_leftover:  slot.isLeftover,
+            servings_used: slot.servingsUsed ?? null,
           })
         }
       }
@@ -186,6 +204,12 @@ export default function MenuPage() {
 
   const openSwapModal = (dayIndex, mealType, isLeftoverSlot = false) => {
     setSwapModal({ dayIndex, mealType, isLeftoverSlot })
+    setSwapSearch('')
+  }
+
+  const closeSwapModal = () => {
+    setSwapModal(null)
+    setSwapSearch('')
   }
 
   const swapDish = (newDish) => {
@@ -197,18 +221,17 @@ export default function MenuPage() {
 
       let updated = prev.map(day =>
         day.dayIndex === dayIndex
-          ? { ...day, [mealType]: { dish: newDish, isLeftover: false } }
+          ? { ...day, [mealType]: { dish: newDish, isLeftover: false, servingsUsed: newDish.servings_count } }
           : day
       )
 
-      // Каскадно обновляем остатки, если заменили свежий слот
       if (!isLeftoverSlot && originalDish) {
         updated = updated.map(day => {
           let changed = false
           const newDay = { ...day }
           for (const mt of MEAL_ORDER) {
             if (newDay[mt]?.isLeftover && newDay[mt]?.dish?.id === originalDish.id) {
-              newDay[mt] = { dish: newDish, isLeftover: true }
+              newDay[mt] = { dish: newDish, isLeftover: true, servingsUsed: newDish.servings_count }
               changed = true
             }
           }
@@ -219,7 +242,7 @@ export default function MenuPage() {
       scheduleAutoSave(updated)
       return updated
     })
-    setSwapModal(null)
+    closeSwapModal()
   }
 
   const changeWeek = (delta) => {
@@ -242,9 +265,16 @@ export default function MenuPage() {
     return Array.from(used)
   }
 
-  const meatStats      = getMeatStats()
+  const meatStats = getMeatStats()
+
   const swapCandidates = swapModal
-    ? dishes.filter(d => d.meal_types?.includes(swapModal.mealType))
+    ? dishes
+        .filter(d => d.meal_types?.includes(swapModal.mealType))
+        .filter(d =>
+          !swapSearch.trim() ||
+          d.name.toLowerCase().includes(swapSearch.trim().toLowerCase())
+        )
+        .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
     : []
 
   if (loading && !menu) return (
@@ -347,11 +377,18 @@ export default function MenuPage() {
                           {slot.isLeftover && (
                             <div className="menu-meal-leftover">🍱 остатки</div>
                           )}
-                          {!slot.isLeftover && slot.dish.servings_count > 1 && (
-                            <div style={{ fontSize: '0.72rem', color: '#3B6D11', marginTop: 2 }}>
-                              Хватит на {pluralizeMeals(slot.dish.servings_count)}
-                            </div>
-                          )}
+                          {!slot.isLeftover && slot.dish.servings_count > 1 && (() => {
+                            const used  = slot.servingsUsed ?? slot.dish.servings_count
+                            const scale = formatScale(used, slot.dish.servings_count)
+                            return (
+                              <div style={{ fontSize: '0.72rem', color: '#3B6D11', marginTop: 2 }}>
+                                {scale
+                                  ? `Готовлю на ${pluralizeMeals(used)} · ${scale} от рецепта`
+                                  : `Хватит на ${pluralizeMeals(slot.dish.servings_count)}`
+                                }
+                              </div>
+                            )
+                          })()}
                           {slot.dish.recipe_link && !slot.isLeftover && (
                             <a
                               href={slot.dish.recipe_link}
@@ -374,13 +411,15 @@ export default function MenuPage() {
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                           <div className="menu-meal-empty">не задано</div>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => openSwapModal(day.dayIndex, mealType, false)}
-                            style={{ fontSize: '0.72rem', padding: '2px 8px', marginTop: 2 }}
-                          >
-                            + добавить
-                          </button>
+                          {day.isActive && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => openSwapModal(day.dayIndex, mealType, false)}
+                              style={{ fontSize: '0.72rem', padding: '2px 8px', marginTop: 2 }}
+                            >
+                              + добавить
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -393,7 +432,7 @@ export default function MenuPage() {
       )}
 
       {swapModal && (
-        <div className="modal-overlay" onClick={() => setSwapModal(null)}>
+        <div className="modal-overlay" onClick={closeSwapModal}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-title">
@@ -401,15 +440,28 @@ export default function MenuPage() {
                   ? `Заменить ${MEAL_LABELS[swapModal.mealType].toLowerCase()} (только этот день)`
                   : `Заменить ${MEAL_LABELS[swapModal.mealType].toLowerCase()}`}
               </span>
-              <button className="btn btn-ghost btn-icon" onClick={() => setSwapModal(null)}>✕</button>
+              <button className="btn btn-ghost btn-icon" onClick={closeSwapModal}>✕</button>
             </div>
             {!swapModal.isLeftoverSlot && (
               <p style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)', margin: '0 0 10px' }}>
                 Остатки этого блюда в других днях тоже обновятся
               </p>
             )}
+            <input
+              type="text"
+              className="form-input"
+              placeholder="🔍 Поиск по названию..."
+              value={swapSearch}
+              onChange={e => setSwapSearch(e.target.value)}
+              autoFocus
+              style={{ marginBottom: 10 }}
+            />
             {swapCandidates.length === 0 ? (
-              <p className="text-sm text-secondary">Нет блюд для этого типа приёма пищи</p>
+              <p className="text-sm text-secondary">
+                {swapSearch.trim()
+                  ? 'Ничего не найдено — попробуй другой запрос'
+                  : 'Нет блюд для этого типа приёма пищи'}
+              </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflowY: 'auto' }}>
                 {swapCandidates.map(dish => (

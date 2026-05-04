@@ -8,20 +8,17 @@ export default function ShoppingPage() {
   const { user }     = useAuth()
   const navigate     = useNavigate()
   const [weekStart, setWeekStart]     = useState(getCurrentWeekStart())
-  const [menuItems, setMenuItems]     = useState([])   // source = 'menu'
-  const [customItems, setCustomItems] = useState([])   // source = 'custom'
+  const [menuItems, setMenuItems]     = useState([])
+  const [customItems, setCustomItems] = useState([])
   const [loading, setLoading]         = useState(true)
   const [newText, setNewText]         = useState('')
+  const [dbError, setDbError]         = useState('')
   const saveTimers = useRef({})
 
   const weekStartStr = weekStart.toISOString().slice(0, 10)
 
-  // Загрузка данных при смене недели
-  useEffect(() => {
-    loadItems()
-  }, [weekStartStr])
+  useEffect(() => { loadItems() }, [weekStartStr])
 
-  // Realtime-подписка (пересоздаётся при смене недели для корректной фильтрации)
   useEffect(() => {
     const channel = supabase
       .channel(`shopping-${user.id}-${weekStartStr}`)
@@ -65,9 +62,9 @@ export default function ShoppingPage() {
 
   const loadItems = async () => {
     setLoading(true)
+    setDbError('')
 
-    // Ингредиенты из меню этой недели
-    const { data: mItems } = await supabase
+    const { data: mItems, error: mErr } = await supabase
       .from('shopping_items')
       .select('*')
       .eq('user_id', user.id)
@@ -75,8 +72,7 @@ export default function ShoppingPage() {
       .eq('week_start_date', weekStartStr)
       .order('sort_order')
 
-    // Пользовательские (глобальные)
-    const { data: cItems } = await supabase
+    const { data: cItems, error: cErr } = await supabase
       .from('shopping_items')
       .select('*')
       .eq('user_id', user.id)
@@ -84,12 +80,23 @@ export default function ShoppingPage() {
       .is('week_start_date', null)
       .order('sort_order')
 
+    if (mErr || cErr) {
+      const err = mErr || cErr
+      console.error('loadItems error:', err)
+      setDbError(
+        err.code === '42P01'
+          ? 'Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.'
+          : `Ошибка загрузки: ${err.message}`
+      )
+      setLoading(false)
+      return
+    }
+
     setCustomItems(cItems || [])
 
     if (mItems && mItems.length > 0) {
       setMenuItems(mItems)
     } else {
-      // Первое открытие этой недели — авто-заполняем из слотов меню
       await populateFromMenu()
     }
 
@@ -114,19 +121,29 @@ export default function ShoppingPage() {
 
     if (!slots || slots.length === 0) return
 
-    // Собираем ингредиенты, дедублируем по имени
+    // Собираем ингредиенты с учётом масштабирования порций
     const seen = new Map()
     for (const slot of slots) {
+      const servingsUsed  = slot.servings_used ?? slot.dishes?.servings_count ?? 1
+      const servingsCount = slot.dishes?.servings_count ?? 1
+      const scale = servingsCount > 0 ? servingsUsed / servingsCount : 1
+
       for (const ing of slot.dishes?.ingredients || []) {
         const key = ing.name.toLowerCase().trim()
         if (!seen.has(key)) {
           const parts = [ing.name]
-          if (ing.quantity) parts.push(String(ing.quantity))
-          if (ing.unit)     parts.push(ing.unit)
+          if (ing.quantity) {
+            // Масштабируем количество, округляем до целого
+            const scaledQty = Math.round(ing.quantity * scale)
+            parts.push(String(scaledQty))
+          }
+          if (ing.unit) parts.push(ing.unit)
           seen.set(key, parts.join(' ').trim())
         }
       }
     }
+
+    if (seen.size === 0) return
 
     const toInsert = Array.from(seen.values()).map((text, i) => ({
       user_id:         user.id,
@@ -137,17 +154,22 @@ export default function ShoppingPage() {
       week_start_date: weekStartStr,
     }))
 
-    if (toInsert.length === 0) return
-
-    const { data: inserted } = await supabase
+    const { data: inserted, error: insertErr } = await supabase
       .from('shopping_items')
       .insert(toInsert)
       .select()
 
+    if (insertErr) {
+      console.error('populateFromMenu insert error:', insertErr)
+      if (insertErr.code === '42P01') {
+        setDbError('Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.')
+      }
+      return
+    }
+
     setMenuItems((inserted || []).sort((a, b) => a.sort_order - b.sort_order))
   }
 
-  // Дебаунсированное сохранение текста в БД
   const saveText = useCallback((id, text) => {
     if (saveTimers.current[id]) clearTimeout(saveTimers.current[id])
     saveTimers.current[id] = setTimeout(async () => {
@@ -180,14 +202,33 @@ export default function ShoppingPage() {
   const addCustomItem = async () => {
     const text = newText.trim()
     if (!text) return
+
+    setNewText('')  // очищаем сразу для быстрого UX
+
     const maxOrder = customItems.reduce((m, i) => Math.max(m, i.sort_order), -1)
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('shopping_items')
-      .insert({ user_id: user.id, text, checked: false, sort_order: maxOrder + 1, source: 'custom', week_start_date: null })
+      .insert({
+        user_id: user.id,
+        text,
+        checked: false,
+        sort_order: maxOrder + 1,
+        source: 'custom',
+        week_start_date: null,
+      })
       .select()
       .single()
+
+    if (error) {
+      console.error('addCustomItem error:', error)
+      setNewText(text)  // возвращаем текст если не сохранилось
+      if (error.code === '42P01') {
+        setDbError('Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.')
+      }
+      return
+    }
+
     if (data) setCustomItems(prev => [...prev, data])
-    setNewText('')
   }
 
   const deleteChecked = async () => {
@@ -253,14 +294,21 @@ export default function ShoppingPage() {
         <h2 className="page-title">Список покупок</h2>
       </div>
 
-      {/* Навигация по неделям */}
       <div className="week-nav" style={{ marginBottom: 20 }}>
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => changeWeek(-1)}>←</button>
         <span className="week-nav-label">{getWeekLabel(weekStart)}</span>
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => changeWeek(1)}>→</button>
       </div>
 
-      {/* Ингредиенты из меню */}
+      {dbError && (
+        <div style={{
+          background: '#FFF3F3', border: '1px solid #F5AAAA', borderRadius: 8,
+          padding: '12px 16px', marginBottom: 16, fontSize: '0.85rem', color: '#8B0000',
+        }}>
+          ⚠️ {dbError}
+        </div>
+      )}
+
       <div style={{ marginBottom: 24 }}>
         <div style={{
           fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase',
@@ -296,7 +344,6 @@ export default function ShoppingPage() {
         )}
       </div>
 
-      {/* Разделитель */}
       <div style={{
         fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase',
         letterSpacing: '0.06em', color: 'var(--color-text-secondary)', marginBottom: 8,
@@ -304,7 +351,6 @@ export default function ShoppingPage() {
         Своё
       </div>
 
-      {/* Пользовательские элементы */}
       {customItems.map(item => (
         <div key={item.id} style={itemStyle(item.checked)}>
           <Checkbox checked={item.checked} onChange={() => toggleChecked(item.id, 'custom')} />
@@ -316,7 +362,6 @@ export default function ShoppingPage() {
         </div>
       ))}
 
-      {/* Строка добавления */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0' }}>
         <div style={{
           width: 16, height: 16, flexShrink: 0, borderRadius: 3,
@@ -340,7 +385,6 @@ export default function ShoppingPage() {
         )}
       </div>
 
-      {/* Кнопка удаления купленного */}
       {hasChecked && (
         <div style={{ marginTop: 20 }}>
           <button

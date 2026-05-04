@@ -59,7 +59,6 @@ export default function DishesPage() {
       .from('dishes')
       .select('*, ingredients(id, name, quantity, unit)')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
       .order('name', { ascending: true })
     setDishes(data || [])
     setLoading(false)
@@ -74,11 +73,13 @@ export default function DishesPage() {
     setDeletingId(null)
   }
 
-  const filtered = dishes.filter(d => {
-    if (filter !== 'all' && !d.meal_types.includes(filter)) return false
-    if (search && !d.name.toLowerCase().includes(search.toLowerCase())) return false
-    return true
-  })
+  const filtered = dishes
+    .filter(d => {
+      if (filter !== 'all' && !d.meal_types.includes(filter)) return false
+      if (search && !d.name.toLowerCase().includes(search.toLowerCase())) return false
+      return true
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
 
   return (
     <div className="page-container">
