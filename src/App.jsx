@@ -9,6 +9,7 @@ import DishViewPage from './pages/DishViewPage'
 import MenuPage from './pages/MenuPage'
 import ShoppingPage from './pages/ShoppingPage'
 import SettingsPage from './pages/SettingsPage'
+import LegalPage from './pages/LegalPage'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -37,6 +38,9 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
       <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
+      {/* Документы открываются и без входа, и после него */}
+      <Route path="/privacy" element={<LegalPage kind="privacy" />} />
+      <Route path="/consent" element={<LegalPage kind="consent" />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<Navigate to="/menu" replace />} />
         <Route path="menu" element={<MenuPage />} />

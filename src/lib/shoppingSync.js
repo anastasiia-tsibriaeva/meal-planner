@@ -27,7 +27,17 @@ async function loadPantryItems(userId) {
  * @param {Array<{dish, servingsUsed}>} cookingSlots — только дни готовки (не остатки)
  * @returns {{ items?: Array, error?: object }}
  */
-export async function syncMenuShoppingItems(userId, weekStartStr, cookingSlots) {
+// Пересборки идут строго по очереди: если страница меню и страница покупок
+// одновременно пересоберут список, получится два списка вместо одного.
+let syncQueue = Promise.resolve()
+
+export function syncMenuShoppingItems(userId, weekStartStr, cookingSlots) {
+  const run = syncQueue.then(() => doSync(userId, weekStartStr, cookingSlots))
+  syncQueue = run.catch(() => {})
+  return run
+}
+
+async function doSync(userId, weekStartStr, cookingSlots) {
   const pantry = await loadPantryItems(userId)
   let fresh
   try {
@@ -50,6 +60,25 @@ export async function syncMenuShoppingItems(userId, weekStartStr, cookingSlots) 
   const wasChecked = key =>
     checkedTexts.some(t => t === key || t.startsWith(key + ' '))
 
+  // Сначала добавляем новый список, потом удаляем старый — чтобы список не пропадал
+  // даже на мгновение (его в это время может читать другое устройство)
+  let inserted = []
+  if (fresh.length > 0) {
+    const { data, error: insErr } = await supabase
+      .from('shopping_items')
+      .insert(fresh.map((item, i) => ({
+        user_id:         userId,
+        text:            item.text,
+        checked:         wasChecked(item.key),
+        sort_order:      i,
+        source:          'menu',
+        week_start_date: weekStartStr,
+      })))
+      .select()
+    if (insErr) return { error: insErr }
+    inserted = data || []
+  }
+
   if (existing?.length) {
     const { error: delErr } = await supabase
       .from('shopping_items')
@@ -58,20 +87,5 @@ export async function syncMenuShoppingItems(userId, weekStartStr, cookingSlots) 
     if (delErr) return { error: delErr }
   }
 
-  if (fresh.length === 0) return { items: [] }
-
-  const { data: inserted, error: insErr } = await supabase
-    .from('shopping_items')
-    .insert(fresh.map((item, i) => ({
-      user_id:         userId,
-      text:            item.text,
-      checked:         wasChecked(item.key),
-      sort_order:      i,
-      source:          'menu',
-      week_start_date: weekStartStr,
-    })))
-    .select()
-  if (insErr) return { error: insErr }
-
-  return { items: (inserted || []).sort((a, b) => a.sort_order - b.sort_order) }
+  return { items: inserted.sort((a, b) => a.sort_order - b.sort_order) }
 }

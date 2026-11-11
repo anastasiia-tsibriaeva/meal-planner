@@ -14,11 +14,31 @@ export default function ShoppingPage() {
   const [loading, setLoading]         = useState(true)
   const [newText, setNewText]         = useState('')
   const [dbError, setDbError]         = useState('')
+  const [menuStatus, setMenuStatus]   = useState('none') // 'none' — меню нет, 'empty' — в меню нет продуктов
   const saveTimers = useRef({})
+  const loadState  = useRef({ running: false, again: false, populate: false })
+  const pendingEdits = useRef(new Set())  // пункты, текст которых ещё сохраняется
+  const reloadTimer  = useRef(null)
 
   const weekStartStr = toDateKey(weekStart)
+  const weekRef = useRef(weekStartStr)
+  weekRef.current = weekStartStr
 
   useEffect(() => { loadItems() }, [weekStartStr])
+
+  // Подтягиваем свежие данные, когда вкладка/телефон снова активны:
+  // пока устройство спало, изменения с другого устройства могли не дойти.
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === 'visible') loadItems({ silent: true }) }
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('focus', refresh)
+    window.addEventListener('online', refresh)
+    return () => {
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('online', refresh)
+    }
+  }, [weekStartStr])
 
   useEffect(() => {
     const channel = supabase
@@ -27,6 +47,9 @@ export default function ShoppingPage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'shopping_items', filter: `user_id=eq.${user.id}` },
         (payload) => {
+          // Применяем изменение сразу (чтобы было мгновенно), а затем перечитываем
+          // список из базы — так запоздавший ответ на старый запрос не затрёт свежие данные.
+          scheduleReload()
           if (payload.eventType === 'INSERT') {
             const item = payload.new
             if (item.source === 'menu' && item.week_start_date === weekStartStr) {
@@ -35,11 +58,12 @@ export default function ShoppingPage() {
               setCustomItems(prev => addOrReplace(prev, item))
             }
           } else if (payload.eventType === 'UPDATE') {
-            const item = payload.new
+            const item = { ...payload.new }
+            if (pendingEdits.current.has(item.id)) delete item.text  // не перебиваем то, что сейчас печатают
             if (item.source === 'menu') {
-              setMenuItems(prev => prev.map(i => i.id === item.id ? item : i))
+              setMenuItems(prev => prev.map(i => i.id === item.id ? { ...i, ...item } : i))
             } else {
-              setCustomItems(prev => prev.map(i => i.id === item.id ? item : i))
+              setCustomItems(prev => prev.map(i => i.id === item.id ? { ...i, ...item } : i))
             }
           } else if (payload.eventType === 'DELETE') {
             const id = payload.old?.id
@@ -50,9 +74,12 @@ export default function ShoppingPage() {
           }
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        // Подписка заработала — перечитываем, чтобы не потерять изменения, сделанные до неё
+        if (status === 'SUBSCRIBED') loadItems({ silent: true })
+      })
 
-    return () => { supabase.removeChannel(channel) }
+    return () => { supabase.removeChannel(channel); clearTimeout(reloadTimer.current) }
   }, [user.id, weekStartStr])
 
   function addOrReplace(list, item) {
@@ -61,16 +88,55 @@ export default function ShoppingPage() {
     return [...list, item].sort((a, b) => a.sort_order - b.sort_order)
   }
 
-  const loadItems = async () => {
-    setLoading(true)
-    setDbError('')
+  /**
+   * Загружает список. Одновременно идёт только одна загрузка: если пока она шла,
+   * попросили ещё раз, — повторяем после неё (иначе две загрузки могли бы
+   * одновременно собрать список из меню и задвоить его).
+   */
+  const loadItems = async ({ silent = false } = {}) => {
+    const state = loadState.current
+    if (!silent) state.populate = true
+    if (state.running) { state.again = true; return }
+    state.running = true
+    if (!silent) setLoading(true)
+    try {
+      do {
+        state.again = false
+        const populate = state.populate
+        state.populate = false
+        await loadOnce(weekRef.current, populate)
+      } while (state.again)
+    } finally {
+      state.running = false
+      setLoading(false)
+    }
+  }
 
+  /** Перечитать список чуть позже — после пачки изменений с этого или другого устройства. */
+  const scheduleReload = () => {
+    clearTimeout(reloadTimer.current)
+    reloadTimer.current = setTimeout(() => loadItems({ silent: true }), 300)
+  }
+
+  /** Данные из базы, но текст, который сейчас печатают на этом устройстве, не трогаем. */
+  const mergeFetched = (fetched) => (prev) => fetched.map(item => {
+    if (!pendingEdits.current.has(item.id)) return item
+    const local = prev.find(p => p.id === item.id)
+    return local ? { ...item, text: local.text } : item
+  })
+
+  /**
+   * populate: если пунктов «из меню» нет — собрать их по меню. Только при открытии
+   * страницы/недели, а не при фоновых обновлениях, — иначе «Удалить купленное»
+   * тут же возвращало бы удалённые пункты.
+   */
+  const loadOnce = async (week, populate) => {
     const { data: mItems, error: mErr } = await supabase
       .from('shopping_items')
       .select('*')
       .eq('user_id', user.id)
       .eq('source', 'menu')
-      .eq('week_start_date', weekStartStr)
+      .eq('week_start_date', week)
       .order('sort_order')
 
     const { data: cItems, error: cErr } = await supabase
@@ -81,6 +147,8 @@ export default function ShoppingPage() {
       .is('week_start_date', null)
       .order('sort_order')
 
+    if (week !== weekRef.current) { loadState.current.again = true; return } // переключили неделю
+
     if (mErr || cErr) {
       const err = mErr || cErr
       console.error('loadItems error:', err)
@@ -89,32 +157,29 @@ export default function ShoppingPage() {
           ? 'Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.'
           : `Ошибка загрузки: ${err.message}`
       )
-      setLoading(false)
       return
     }
+    setDbError('')
+    setCustomItems(mergeFetched(cItems || []))
 
-    setCustomItems(cItems || [])
-
-    if (mItems && mItems.length > 0) {
-      setMenuItems(mItems)
+    if ((mItems && mItems.length > 0) || !populate) {
+      setMenuItems(mergeFetched(mItems || []))
     } else {
-      await populateFromMenu()
+      await populateFromMenu(week)
     }
-
-    setLoading(false)
   }
 
-  const populateFromMenu = async () => {
+  const populateFromMenu = async (week) => {
     const { data: weekMenu } = await supabase
       .from('weekly_menus')
       .select('id')
       .eq('user_id', user.id)
-      .eq('week_start_date', weekStartStr)
+      .eq('week_start_date', week)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
 
-    if (!weekMenu) return
+    if (!weekMenu) { setMenuItems([]); setMenuStatus('none'); return }
 
     const { data: slots } = await supabase
       .from('menu_slots')
@@ -122,13 +187,14 @@ export default function ShoppingPage() {
       .eq('menu_id', weekMenu.id)
       .eq('is_leftover', false)
 
-    if (!slots || slots.length === 0) return
+    if (!slots || slots.length === 0) { setMenuItems([]); setMenuStatus('empty'); return }
 
     const cookingSlots = slots
       .filter(slot => slot.dishes)
       .map(slot => ({ dish: slot.dishes, servingsUsed: slot.servings_used ?? slot.dishes.servings_count }))
 
-    const { items, error } = await syncMenuShoppingItems(user.id, weekStartStr, cookingSlots)
+    const { items, error } = await syncMenuShoppingItems(user.id, week, cookingSlots)
+    if (week !== weekRef.current) return
     if (error) {
       console.error('populateFromMenu error:', error)
       setDbError(
@@ -139,13 +205,20 @@ export default function ShoppingPage() {
       return
     }
     setMenuItems(items || [])
+    setMenuStatus('empty')
   }
 
   const saveText = useCallback((id, text) => {
     if (saveTimers.current[id]) clearTimeout(saveTimers.current[id])
-    saveTimers.current[id] = setTimeout(async () => {
+    pendingEdits.current.add(id)
+    const timer = setTimeout(async () => {
       await supabase.from('shopping_items').update({ text }).eq('id', id)
+      if (saveTimers.current[id] === timer) {  // пока сохраняли, новых правок не было
+        pendingEdits.current.delete(id)
+        delete saveTimers.current[id]
+      }
     }, 600)
+    saveTimers.current[id] = timer
   }, [])
 
   const updateText = (id, text, source) => {
@@ -290,13 +363,19 @@ export default function ShoppingPage() {
 
         {menuItems.length === 0 ? (
           <div style={{ fontSize: '0.88rem', color: 'var(--color-text-secondary)', padding: '8px 0' }}>
-            Меню на эту неделю ещё не создано.{' '}
-            <span
-              style={{ color: 'var(--color-primary)', cursor: 'pointer' }}
-              onClick={() => navigate('/menu')}
-            >
-              Сгенерировать →
-            </span>
+            {menuStatus === 'empty' ? (
+              'В меню на эту неделю нет продуктов для покупки: у блюд не указаны ингредиенты или всё есть дома.'
+            ) : (
+              <>
+                Меню на эту неделю ещё не создано.{' '}
+                <span
+                  style={{ color: 'var(--color-primary)', cursor: 'pointer' }}
+                  onClick={() => navigate('/menu')}
+                >
+                  Сгенерировать →
+                </span>
+              </>
+            )}
           </div>
         ) : (
           menuItems.map(item => (

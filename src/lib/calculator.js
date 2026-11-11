@@ -32,11 +32,12 @@ function dishForMenu(dish) {
 
 /**
  * Меню на неделю.
+ * @param {'1-2'|'3-5'|'any'} hardDishesPerWeek — сколько сложных блюд в неделю (от и до)
  * @returns {Promise<Array>} 7 дней: { dayIndex, breakfast, lunch, dinner },
  *   слот — { dishId, isLeftover, servingsUsed } или null
  */
-export async function requestMenu(dishes, activeDays) {
-  const body = await post('/api/menu', { dishes: dishes.map(dishForMenu), activeDays })
+export async function requestMenu(dishes, activeDays, hardDishesPerWeek = '1-2') {
+  const body = await post('/api/menu', { dishes: dishes.map(dishForMenu), activeDays, hardDishesPerWeek })
   return body.days
 }
 

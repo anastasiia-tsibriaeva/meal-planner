@@ -24,18 +24,6 @@ function pluralizeMeals(n) {
   return `${n} приёмов пищи`
 }
 
-/**
- * Возвращает строку коэффициента масштабирования (например «×2/3»)
- * или null, если масштаб не изменился.
- */
-function formatScale(used, total) {
-  if (!used || !total || used === total) return null
-  function gcd(a, b) { return b === 0 ? a : gcd(b, a % b) }
-  const g = gcd(used, total)
-  const num = used / g, den = total / g
-  return den === 1 ? `×${num}` : `×${num}/${den}`
-}
-
 function RefreshIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -61,12 +49,14 @@ export default function MenuPage() {
   const [menu, setMenu]                       = useState(null)
   const [weekStart, setWeekStart]             = useState(getCurrentWeekStart())
   const [activeDays, setActiveDays]           = useState([0, 1, 2, 3, 4, 5, 6])
+  const [hardDishes, setHardDishes]           = useState('1-2')
   const [settingsLoaded, setSettingsLoaded]   = useState(false)
   const [loading, setLoading]                 = useState(true)
   const [saving, setSaving]                   = useState(false)
   const [generating, setGenerating]           = useState(false)
   const [genError, setGenError]               = useState('')
   const weekRequestRef = useRef(0)
+  const saveChain = useRef(Promise.resolve())
   const [swapModal, setSwapModal]             = useState(null)
   const [swapSearch, setSwapSearch]           = useState('')
   const autoSaveTimer = useRef(null)
@@ -83,10 +73,11 @@ export default function MenuPage() {
   const loadSettings = async () => {
     const { data } = await supabase
       .from('user_settings')
-      .select('active_days')
+      .select('*')  // все колонки: если какой-то ещё нет в базе, остальные всё равно загрузятся
       .eq('user_id', user.id)
-      .single()
+      .maybeSingle()
     if (data?.active_days) setActiveDays(data.active_days)
+    if (data?.hard_dishes_per_week) setHardDishes(data.hard_dishes_per_week)
     setSettingsLoaded(true)
   }
 
@@ -135,7 +126,7 @@ export default function MenuPage() {
       if (generated) scheduleAutoSave(generated)
     }
     setLoading(false)
-  }, [dishes, weekStart, user.id, activeDays])
+  }, [dishes, weekStart, user.id, activeDays, hardDishes])
 
   function emptyWeek(weekStart, activeDays) {
     return Array.from({ length: 7 }, (_, i) => {
@@ -153,7 +144,7 @@ export default function MenuPage() {
   async function generateWeek() {
     setGenerating(true)
     try {
-      const plan = await requestMenu(dishes, activeDays)
+      const plan = await requestMenu(dishes, activeDays, hardDishes)
       const byId = new Map(dishes.map(d => [d.id, d]))
       const menu = emptyWeek(weekStart, activeDays)
       for (const day of plan) {
@@ -191,59 +182,73 @@ export default function MenuPage() {
   }
 
   const scheduleAutoSave = (menuData) => {
+    const weekStartStr = toDateKey(weekStart)
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-    autoSaveTimer.current = setTimeout(() => persistMenu(menuData), 800)
+    autoSaveTimer.current = setTimeout(() => {
+      // Сохранения идут строго по очереди, чтобы два сохранения не удалили меню друг друга
+      saveChain.current = saveChain.current
+        .then(() => persistMenu(menuData, weekStartStr))
+        .catch(err => console.error('persistMenu error:', err))
+    }, 800)
   }
 
-  const persistMenu = async (menuData) => {
+  /**
+   * Сохраняет меню недели. Сначала записываем новое меню, потом удаляем старое —
+   * так в базе нет момента, когда меню на неделю нет вовсе (иначе открытая в это время
+   * страница «Покупки» решала, что меню не создано).
+   */
+  const persistMenu = async (menuData, weekStartStr) => {
     if (!menuData) return
     setSaving(true)
-    const weekStartStr = toDateKey(weekStart)
+    try {
+      const { data: newMenu, error: menuErr } = await supabase
+        .from('weekly_menus')
+        .insert({ user_id: user.id, week_start_date: weekStartStr })
+        .select()
+        .single()
+      if (menuErr || !newMenu) { console.error('save menu error:', menuErr); return }
 
-    await supabase
-      .from('weekly_menus')
-      .delete()
-      .eq('user_id', user.id)
-      .eq('week_start_date', weekStartStr)
-
-    const { data: newMenu } = await supabase
-      .from('weekly_menus')
-      .insert({ user_id: user.id, week_start_date: weekStartStr })
-      .select()
-      .single()
-
-    if (!newMenu) { setSaving(false); return }
-
-    const slots = []
-    for (const day of menuData) {
-      for (const mealType of MEAL_ORDER) {
-        const slot = day[mealType]
-        if (slot?.dish) {
+      const slots = []
+      const cookingSlots = []
+      for (const day of menuData) {
+        for (const mealType of MEAL_ORDER) {
+          const slot = day[mealType]
+          if (!slot?.dish) continue
           slots.push({
-            menu_id:      newMenu.id,
-            day_index:    day.dayIndex,
-            meal_type:    mealType,
-            dish_id:      slot.dish.id,
-            is_leftover:  slot.isLeftover,
+            menu_id:       newMenu.id,
+            day_index:     day.dayIndex,
+            meal_type:     mealType,
+            dish_id:       slot.dish.id,
+            is_leftover:   slot.isLeftover,
             servings_used: slot.servingsUsed ?? null,
           })
+          if (!slot.isLeftover) cookingSlots.push({ dish: slot.dish, servingsUsed: slot.servingsUsed })
         }
       }
-    }
-    if (slots.length > 0) await supabase.from('menu_slots').insert(slots)
 
-    // Пересобираем список покупок «Из меню» под новое меню
-    const cookingSlots = []
-    for (const day of menuData) {
-      for (const mealType of MEAL_ORDER) {
-        const slot = day[mealType]
-        if (slot?.dish && !slot.isLeftover) cookingSlots.push({ dish: slot.dish, servingsUsed: slot.servingsUsed })
+      if (slots.length > 0) {
+        const { error: slotsErr } = await supabase.from('menu_slots').insert(slots)
+        if (slotsErr) {
+          console.error('save slots error:', slotsErr)
+          await supabase.from('weekly_menus').delete().eq('id', newMenu.id) // откатываем недописанное меню
+          return
+        }
       }
-    }
-    const { error: syncErr } = await syncMenuShoppingItems(user.id, weekStartStr, cookingSlots)
-    if (syncErr) console.error('shopping sync error:', syncErr)
 
-    setSaving(false)
+      // Новое меню записано целиком — теперь убираем старые версии этой недели
+      await supabase
+        .from('weekly_menus')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('week_start_date', weekStartStr)
+        .neq('id', newMenu.id)
+
+      // Пересобираем список покупок «Из меню» под новое меню
+      const { error: syncErr } = await syncMenuShoppingItems(user.id, weekStartStr, cookingSlots)
+      if (syncErr) console.error('shopping sync error:', syncErr)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const regenerate = async () => {
@@ -439,15 +444,22 @@ export default function MenuPage() {
                           {slot.isLeftover && (
                             <div className="menu-meal-leftover">🍱 остатки</div>
                           )}
-                          {!slot.isLeftover && slot.dish.servings_count > 1 && (() => {
-                            const used  = slot.servingsUsed ?? slot.dish.servings_count
-                            const scale = formatScale(used, slot.dish.servings_count)
+                          {!slot.isLeftover && (() => {
+                            const total = slot.dish.servings_count || 1
+                            const used  = slot.servingsUsed ?? total
+                            if (used === total) {
+                              return total > 1 ? (
+                                <div style={{ fontSize: '0.72rem', color: '#3B6D11', marginTop: 2 }}>
+                                  Хватит на {pluralizeMeals(total)}
+                                </div>
+                              ) : null
+                            }
                             return (
                               <div style={{ fontSize: '0.72rem', color: '#3B6D11', marginTop: 2 }}>
-                                {scale
-                                  ? `Готовлю на ${pluralizeMeals(used)} · ${scale} от рецепта`
-                                  : `Хватит на ${pluralizeMeals(slot.dish.servings_count)}`
-                                }
+                                Планер {used > total ? 'увеличил' : 'уменьшил'} порцию: {pluralizeMeals(used)} вместо {total}
+                                <div style={{ color: 'var(--color-text-secondary)', marginTop: 1 }}>
+                                  Продукты в списке покупок уже пересчитаны
+                                </div>
                               </div>
                             )
                           })()}

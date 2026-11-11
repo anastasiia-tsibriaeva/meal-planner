@@ -50,7 +50,12 @@ def validate_menu_request(body) -> tuple:
     _require(isinstance(active_days, list) and all(isinstance(d, int) and not isinstance(d, bool) and 0 <= d <= 6 for d in active_days),
              "activeDays: список чисел от 0 до 6")
     _require(len(set(active_days)) == len(active_days), "activeDays: дни не должны повторяться")
-    return dishes, sorted(active_days)
+
+    from .menu import DEFAULT_HARD_DISHES, HARD_DISHES_OPTIONS
+    hard = body.get("hardDishesPerWeek", DEFAULT_HARD_DISHES)
+    _require(hard in HARD_DISHES_OPTIONS, "hardDishesPerWeek: допустимо " + ", ".join(HARD_DISHES_OPTIONS))
+    hard_min, hard_max = HARD_DISHES_OPTIONS[hard]
+    return dishes, sorted(active_days), hard_min, hard_max
 
 
 def validate_shopping_request(body) -> tuple:

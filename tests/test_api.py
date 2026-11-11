@@ -63,6 +63,11 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("meal_types", body["error"])
 
+    def test_menu_bad_hard_dishes_option(self):
+        status, body = self.post(self.menu_url, {"dishes": [], "hardDishesPerWeek": "10"})
+        self.assertEqual(status, 400)
+        self.assertIn("hardDishesPerWeek", body["error"])
+
     def test_not_json(self):
         status, body = self.post(self.menu_url, b"hello")
         self.assertEqual(status, 400)

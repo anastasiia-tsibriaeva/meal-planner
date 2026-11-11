@@ -6,7 +6,8 @@
   (без остатков в конце недели).
 - Блюда на 2 или 3 приёма пищи можно растягивать/сжимать между 2 и 3.
 - weekends_only: блюдо готовится (как новое) только в субботу или воскресенье.
-- Не больше одного сложного блюда за неделю.
+- Сложные блюда: сколько их в неделю, задаёт настройка (диапазон «от и до»);
+  без настройки — не больше одного, как было изначально.
 - Разнообразие мяса: стараемся охватить все 4 типа.
 - Кластеризация: блюда с общими ингредиентами переносим в один 3-дневный период.
 
@@ -22,6 +23,10 @@ MEAL_TYPES = ("breakfast", "lunch", "dinner")
 IS_WEEKEND = (False, False, False, False, False, True, True)
 MEAT_TYPES_TRACKABLE = ("poultry", "red_meat", "fish", "seafood")
 MAX_PICK_ATTEMPTS = 40
+
+# Настройка «Сложных блюд в неделю» → (минимум, максимум); None — без ограничения
+HARD_DISHES_OPTIONS = {"1-2": (1, 2), "3-5": (3, 5), "any": (0, None)}
+DEFAULT_HARD_DISHES = "1-2"
 
 Rng = Callable[[], float]  # функция, возвращающая случайное число в [0, 1)
 
@@ -49,6 +54,7 @@ def _pick_dish(
     used_dish_ids: set,
     hard_count_week: int,
     slots_remaining: int,
+    hard_max: Optional[int] = 1,
 ) -> Optional[dict]:
     """Выбирает блюдо с учётом ограничений.
 
@@ -69,7 +75,7 @@ def _pick_dish(
     if not is_weekend:
         narrow(lambda d: not d.get("weekends_only"))
 
-    if hard_count_week >= 1:
+    if hard_max is not None and hard_count_week >= hard_max:
         narrow(lambda d: d.get("difficulty") != "hard")
 
     missing_types = [t for t in MEAT_TYPES_TRACKABLE if t not in meat_types_used]
@@ -134,6 +140,7 @@ def _plan_meal_slots(dishes: list, active_days: list, rng: Rng, state: dict) -> 
             used_dish_ids=state["used_dish_ids"],
             hard_count_week=state["hard_count_week"],
             slots_remaining=remaining,
+            hard_max=state["hard_max"],
         )
         if dish is None:
             break
@@ -165,16 +172,25 @@ def _copy_state(state: dict) -> dict:
         "meat_types_used": set(state["meat_types_used"]),
         "used_dish_ids": set(state["used_dish_ids"]),
         "hard_count_week": state["hard_count_week"],
+        "hard_max": state["hard_max"],
     }
 
 
-def generate_menu(dishes: list, active_days: Optional[list] = None, rng: Rng = random.random) -> list:
+def generate_menu(
+    dishes: list,
+    active_days: Optional[list] = None,
+    rng: Rng = random.random,
+    hard_min: int = 0,
+    hard_max: Optional[int] = 1,
+) -> list:
     """Составляет меню на неделю.
 
     :param dishes: блюда — словари с полями id, meal_types, meat_type, difficulty,
         servings_count, weekends_only, ingredients (нужны только названия)
     :param active_days: дни, которые нужно заполнять (0 — понедельник)
     :param rng: источник случайных чисел; в тестах подменяется на предсказуемый
+    :param hard_min: сколько сложных блюд (обеды и ужины) стараться поставить как минимум
+    :param hard_max: больше скольких не ставить; None — без ограничения
     :return: 7 дней: [{"dayIndex", "isActive", "breakfast", "lunch", "dinner"}],
         где слот — {"dish", "isLeftover", "servingsUsed"} или None
     """
@@ -197,7 +213,7 @@ def generate_menu(dishes: list, active_days: Optional[list] = None, rng: Rng = r
         for i in range(7)
     ]
 
-    state = {"meat_types_used": set(), "used_dish_ids": set(), "hard_count_week": 0}
+    state = {"meat_types_used": set(), "used_dish_ids": set(), "hard_count_week": 0, "hard_max": hard_max}
 
     # ---------- Завтраки: одно блюдо на пару активных дней ----------
     if breakfast_dishes:
@@ -227,8 +243,67 @@ def generate_menu(dishes: list, active_days: Optional[list] = None, rng: Rng = r
         if i < len(dinner_queue):
             menu[day]["dinner"] = dinner_queue[i]
 
+    if hard_min > 0:
+        pools = {"lunch": lunch_dishes or lunch_or_dinner, "dinner": dinner_dishes or lunch_or_dinner}
+        _add_hard_dishes_up_to_min(menu, pools, hard_min, hard_max, rng)
+
     _cluster_by_ingredients(menu)
     return menu
+
+
+# ---------- Минимум сложных блюд ----------
+
+def _fits_block(dish: dict, length: int) -> bool:
+    """Подходит ли блюдо в блок такой длины (с учётом гибкости 2↔3)."""
+    s = _servings(dish)
+    return s == length or (s in (2, 3) and length in (2, 3))
+
+
+def _add_hard_dishes_up_to_min(menu: list, pools: dict, hard_min: int, hard_max: Optional[int], rng: Rng) -> None:
+    """Если сложных блюд меньше минимума, заменяем ими обычные обеды/ужины.
+
+    Блок (готовка + остатки) заменяется целиком блюдом, которое подходит по числу
+    приёмов пищи, поэтому остатки и порции остаются согласованными. Сначала пробуем
+    блоки, которые начинаются в выходные (на сложное блюдо там обычно больше времени),
+    потом остальные. Стараемся не терять разнообразие мяса. Если подходящих блюд нет —
+    минимум не выполняется (правило «мягкое», как и остальные).
+    """
+    blocks = [b for b in _build_cooking_blocks(menu) if b["mealType"] in ("lunch", "dinner")]
+    hard_count = sum(1 for b in blocks if b["dish"].get("difficulty") == "hard")
+    if hard_count >= hard_min:
+        return
+
+    used_ids = {menu[d][mt]["dish"]["id"] for d in range(7) for mt in MEAL_TYPES if menu[d][mt]}
+    regular = [b for b in blocks if b["dish"].get("difficulty") != "hard"]
+    weekend = _shuffle([b for b in regular if IS_WEEKEND[b["days"][0]]], rng)
+    weekday = _shuffle([b for b in regular if not IS_WEEKEND[b["days"][0]]], rng)
+
+    for block in weekend + weekday:
+        if hard_count >= hard_min or (hard_max is not None and hard_count >= hard_max):
+            break
+        start, length, meal_type = block["days"][0], len(block["days"]), block["mealType"]
+        candidates = [
+            d for d in pools[meal_type]
+            if d.get("difficulty") == "hard" and d["id"] not in used_ids
+            and _fits_block(d, length) and _can_start_on(d, start)
+        ]
+        if not candidates:
+            continue
+
+        # Не теряем тип мяса, который в неделе есть только у заменяемого блюда
+        old_meat = block["dish"].get("meat_type")
+        others = {b["dish"].get("meat_type") for b in blocks if b is not block}
+        if old_meat in MEAT_TYPES_TRACKABLE and old_meat not in others:
+            same_meat = [d for d in candidates if d.get("meat_type") == old_meat]
+            if same_meat:
+                candidates = same_meat
+
+        dish = candidates[math.floor(rng() * len(candidates))]
+        for k, day in enumerate(block["days"]):
+            menu[day][meal_type] = {"dish": dish, "isLeftover": k > 0, "servingsUsed": length}
+        block["dish"] = dish
+        used_ids.add(dish["id"])
+        hard_count += 1
 
 
 # ---------- Кластеризация по ингредиентам ----------

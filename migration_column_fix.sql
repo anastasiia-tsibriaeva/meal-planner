@@ -12,6 +12,16 @@ ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS updated_at    TIMESTAMPTZ DEF
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS pantry_items  TEXT[]
   DEFAULT ARRAY['соль', 'чёрный перец', 'перец чёрный', 'перец молотый'];
 
+-- Сколько сложных блюд в неделю: '1-2', '3-5' или 'any' (сколько угодно)
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS hard_dishes_per_week TEXT NOT NULL DEFAULT '1-2';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'user_settings_hard_dishes_check') THEN
+    ALTER TABLE user_settings ADD CONSTRAINT user_settings_hard_dishes_check
+      CHECK (hard_dishes_per_week IN ('1-2', '3-5', 'any'));
+  END IF;
+END $$;
+
 -- Список покупок
 CREATE TABLE IF NOT EXISTS shopping_items (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,

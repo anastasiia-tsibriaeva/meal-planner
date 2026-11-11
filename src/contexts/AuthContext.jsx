@@ -20,8 +20,9 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe()
   }, [])
 
-  const signUp = async (email, password) => {
-    const { error } = await supabase.auth.signUp({ email, password })
+  // metadata сохраняется у пользователя в auth.users.raw_user_meta_data
+  const signUp = async (email, password, metadata = {}) => {
+    const { error } = await supabase.auth.signUp({ email, password, options: { data: metadata } })
     return { error }
   }
 

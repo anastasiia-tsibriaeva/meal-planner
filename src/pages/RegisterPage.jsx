@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { CONSENT_VERSION } from './LegalPage'
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [consent, setConsent] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -25,8 +27,18 @@ export default function RegisterPage() {
       return
     }
 
+    if (!consent) {
+      setError('Чтобы зарегистрироваться, нужно согласие на обработку персональных данных.')
+      return
+    }
+
     setLoading(true)
-    const { error } = await signUp(email, password)
+    // Сохраняем, когда и на какую редакцию согласия согласился человек:
+    // по закону подтвердить получение согласия должен оператор
+    const { error } = await signUp(email, password, {
+      pd_consent_version: CONSENT_VERSION,
+      pd_consent_at: new Date().toISOString(),
+    })
     setLoading(false)
 
     if (error) {
@@ -110,6 +122,19 @@ export default function RegisterPage() {
             />
           </div>
 
+          <div className="form-group">
+            <label className="consent-check">
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={e => { setConsent(e.target.checked); setError('') }}
+              />
+              <span>
+                Даю <a href="/consent" target="_blank" rel="noreferrer">согласие на обработку персональных данных</a>
+              </span>
+            </label>
+          </div>
+
           <button
             type="submit"
             className="btn btn-primary btn-lg"
@@ -119,6 +144,11 @@ export default function RegisterPage() {
             {loading ? 'Создаём аккаунт...' : 'Зарегистрироваться'}
           </button>
         </form>
+
+        <p className="form-hint" style={{ marginTop: 12, textAlign: 'center' }}>
+          Нажимая «Зарегистрироваться», вы подтверждаете, что ознакомились с{' '}
+          <a href="/privacy" target="_blank" rel="noreferrer">Политикой конфиденциальности</a>.
+        </p>
 
         <p className="auth-divider">
           Уже есть аккаунт?{' '}

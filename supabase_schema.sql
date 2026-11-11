@@ -56,6 +56,7 @@ CREATE TABLE user_settings (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
   pantry_items TEXT[] DEFAULT ARRAY['соль', 'чёрный перец', 'перец чёрный', 'перец молотый'],
   active_days INTEGER[] NOT NULL DEFAULT '{0,1,2,3,4,5,6}',
+  hard_dishes_per_week TEXT NOT NULL DEFAULT '1-2' CHECK (hard_dishes_per_week IN ('1-2', '3-5', 'any')),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
