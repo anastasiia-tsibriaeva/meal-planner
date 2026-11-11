@@ -71,8 +71,6 @@ What I did myself:
 - I tested the website with my own dishes and found problems: for example, the shopping list did not appear when I made a menu in the middle of the week;
 - I chose the texts and the design of the home page.
 
-What I learned: [to fill in]
-
 ## For developers
 
 Run it on your computer:
