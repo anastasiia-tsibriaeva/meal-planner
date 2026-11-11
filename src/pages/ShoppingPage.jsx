@@ -286,6 +286,26 @@ export default function ShoppingPage() {
     await supabase.from('shopping_items').delete().in('id', checkedIds)
   }
 
+  /** Удалить один пункт: из меню (если продукт уже есть дома) или свой. */
+  const deleteItem = async (id, source) => {
+    // Текст этого пункта мог ещё сохраняться — отменяем, пункта больше нет
+    if (saveTimers.current[id]) {
+      clearTimeout(saveTimers.current[id])
+      delete saveTimers.current[id]
+    }
+    pendingEdits.current.delete(id)
+
+    if (source === 'menu') setMenuItems(prev => prev.filter(i => i.id !== id))
+    else setCustomItems(prev => prev.filter(i => i.id !== id))
+
+    const { error } = await supabase.from('shopping_items').delete().eq('id', id)
+    if (error) {
+      console.error('deleteItem error:', error)
+      setDbError('Не получилось удалить пункт. Обнови страницу и попробуй ещё раз.')
+      loadItems({ silent: true })  // возвращаем пункт на экран, раз в базе он остался
+    }
+  }
+
   const changeWeek = (delta) => {
     const d = new Date(weekStart)
     d.setDate(d.getDate() + delta * 7)
@@ -302,11 +322,26 @@ export default function ShoppingPage() {
   })
 
   const inputStyle = (checked) => ({
-    flex: 1, border: 'none', background: 'transparent', outline: 'none',
+    flex: 1, minWidth: 0, border: 'none', background: 'transparent', outline: 'none',
     fontSize: '0.9rem', fontFamily: 'inherit', padding: 0,
     color: 'var(--color-text-primary)',
     textDecoration: checked ? 'line-through' : 'none',
   })
+
+  const DeleteButton = ({ onClick, text }) => (
+    <button
+      type="button"
+      className="item-delete"
+      onClick={onClick}
+      aria-label={`Удалить «${text}»`}
+      title="Удалить"
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        <path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+      </svg>
+    </button>
+  )
 
   const Checkbox = ({ checked, onChange }) => (
     <div
@@ -389,6 +424,7 @@ export default function ShoppingPage() {
               <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', flexShrink: 0 }}>
                 из меню
               </span>
+              <DeleteButton onClick={() => deleteItem(item.id, 'menu')} text={item.text} />
             </div>
           ))
         )}
@@ -409,6 +445,7 @@ export default function ShoppingPage() {
             value={item.text}
             onChange={e => updateText(item.id, e.target.value, 'custom')}
           />
+          <DeleteButton onClick={() => deleteItem(item.id, 'custom')} text={item.text} />
         </div>
       ))}
 
