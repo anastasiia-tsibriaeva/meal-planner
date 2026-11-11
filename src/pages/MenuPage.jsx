@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { generateMenu, getCurrentWeekStart, getWeekLabel, toDateKey } from '../lib/menuGenerator'
+import { getCurrentWeekStart, getWeekLabel, toDateKey, formatDate } from '../lib/dates'
+import { requestMenu } from '../lib/calculator'
 import { syncMenuShoppingItems } from '../lib/shoppingSync'
 
 const MEAL_LABELS       = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
@@ -63,6 +64,9 @@ export default function MenuPage() {
   const [settingsLoaded, setSettingsLoaded]   = useState(false)
   const [loading, setLoading]                 = useState(true)
   const [saving, setSaving]                   = useState(false)
+  const [generating, setGenerating]           = useState(false)
+  const [genError, setGenError]               = useState('')
+  const weekRequestRef = useRef(0)
   const [swapModal, setSwapModal]             = useState(null)
   const [swapSearch, setSwapSearch]           = useState('')
   const autoSaveTimer = useRef(null)
@@ -96,7 +100,9 @@ export default function MenuPage() {
   }
 
   const loadOrGenerateMenu = useCallback(async () => {
+    const requestId = ++weekRequestRef.current
     setLoading(true)
+    setGenError('')
     const weekStartStr = toDateKey(weekStart)
 
     const { data: existingMenu } = await supabase
@@ -115,6 +121,7 @@ export default function MenuPage() {
         .eq('menu_id', existingMenu.id)
         .order('day_index')
       if (slots) {
+        if (requestId !== weekRequestRef.current) return // пока грузили, переключили неделю
         setMenu(buildMenuFromSlots(slots, weekStart, activeDays))
         setLoading(false)
         return
@@ -122,23 +129,52 @@ export default function MenuPage() {
     }
 
     if (dishes.length > 0) {
-      const generated = generateMenu(dishes, weekStart, { activeDays })
-      setMenu(generated)
-      scheduleAutoSave(generated)
+      const generated = await generateWeek()
+      if (requestId !== weekRequestRef.current) return
+      setMenu(generated ?? emptyWeek(weekStart, activeDays))
+      if (generated) scheduleAutoSave(generated)
     }
     setLoading(false)
   }, [dishes, weekStart, user.id, activeDays])
 
-  function buildMenuFromSlots(slots, weekStart, activeDays) {
-    const menu = Array.from({ length: 7 }, (_, i) => {
+  function emptyWeek(weekStart, activeDays) {
+    return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(weekStart); d.setDate(d.getDate() + i)
       return {
         dayIndex: i, dayName: DAY_NAMES[i], isWeekend: IS_WEEKEND[i],
         isActive: activeDays.includes(i),
-        date: d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }),
+        date: formatDate(d),
         breakfast: null, lunch: null, dinner: null,
       }
     })
+  }
+
+  /** Просим Python-калькулятор составить меню и подставляем блюда по их id. */
+  async function generateWeek() {
+    setGenerating(true)
+    try {
+      const plan = await requestMenu(dishes, activeDays)
+      const byId = new Map(dishes.map(d => [d.id, d]))
+      const menu = emptyWeek(weekStart, activeDays)
+      for (const day of plan) {
+        for (const mealType of MEAL_ORDER) {
+          const slot = day[mealType]
+          const dish = slot && byId.get(slot.dishId)
+          if (dish) menu[day.dayIndex][mealType] = { dish, isLeftover: slot.isLeftover, servingsUsed: slot.servingsUsed }
+        }
+      }
+      return menu
+    } catch (err) {
+      console.error('menu calculator error:', err)
+      setGenError('Не получилось составить меню — калькулятор не ответил. Попробуй ещё раз через минуту.')
+      return null
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  function buildMenuFromSlots(slots, weekStart, activeDays) {
+    const menu = emptyWeek(weekStart, activeDays)
     for (const slot of slots) {
       if (slot.day_index >= 0 && slot.day_index < 7) {
         // Показываем всё сохранённое, в т.ч. блюда, добавленные вручную в свободные дни
@@ -210,12 +246,16 @@ export default function MenuPage() {
     setSaving(false)
   }
 
-  const regenerate = () => {
-    if (dishes.length === 0) return
-    const generated = generateMenu(dishes, weekStart, { activeDays })
+  const regenerate = async () => {
+    if (dishes.length === 0 || generating) return
+    const requestId = ++weekRequestRef.current
+    setGenError('')
+    const generated = await generateWeek()
+    if (!generated || requestId !== weekRequestRef.current) return
     setMenu(generated)
     scheduleAutoSave(generated)
   }
+
 
   const openSwapModal = (dayIndex, mealType, isLeftoverSlot = false) => {
     setSwapModal({ dayIndex, mealType, isLeftoverSlot })
@@ -319,11 +359,20 @@ export default function MenuPage() {
               Сохраняем...
             </span>
           )}
-          <button className="btn btn-secondary" onClick={regenerate} disabled={loading}>
-            <RefreshIcon /> Сгенерировать другое меню
+          <button className="btn btn-secondary" onClick={regenerate} disabled={loading || generating}>
+            <RefreshIcon /> {generating ? 'Составляем...' : 'Сгенерировать другое меню'}
           </button>
         </div>
       </div>
+
+      {genError && (
+        <div className="alert alert-error" style={{ marginBottom: 16 }}>
+          {genError}{' '}
+          <button className="btn btn-ghost btn-sm" onClick={regenerate} disabled={generating}>
+            Повторить
+          </button>
+        </div>
+      )}
 
       <div className="week-nav">
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => changeWeek(-1)}>←</button>

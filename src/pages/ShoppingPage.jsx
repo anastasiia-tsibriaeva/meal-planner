@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { getCurrentWeekStart, getWeekLabel, toDateKey } from '../lib/menuGenerator'
+import { getCurrentWeekStart, getWeekLabel, toDateKey } from '../lib/dates'
 import { syncMenuShoppingItems } from '../lib/shoppingSync'
 
 export default function ShoppingPage() {
@@ -131,9 +131,11 @@ export default function ShoppingPage() {
     const { items, error } = await syncMenuShoppingItems(user.id, weekStartStr, cookingSlots)
     if (error) {
       console.error('populateFromMenu error:', error)
-      if (error.code === '42P01') {
-        setDbError('Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.')
-      }
+      setDbError(
+        error.code === '42P01'
+          ? 'Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.'
+          : 'Не получилось собрать список из меню. Обнови страницу через минуту.'
+      )
       return
     }
     setMenuItems(items || [])

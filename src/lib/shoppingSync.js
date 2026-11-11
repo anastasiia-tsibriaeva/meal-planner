@@ -1,5 +1,12 @@
 import { supabase } from './supabase'
-import { buildShoppingItems, normalizeIngredientName, DEFAULT_PANTRY_ITEMS } from './shoppingList'
+import { requestShoppingItems } from './calculator'
+
+// Должен совпадать с DEFAULT_PANTRY_ITEMS в planner/shopping.py
+const DEFAULT_PANTRY_ITEMS = ['соль', 'чёрный перец', 'перец чёрный', 'перец молотый']
+
+function normalizeIngredientName(name) {
+  return (name || '').toLowerCase().trim().replace(/ё/g, 'е').replace(/\s+/g, ' ')
+}
 
 async function loadPantryItems(userId) {
   const { data, error } = await supabase
@@ -22,7 +29,12 @@ async function loadPantryItems(userId) {
  */
 export async function syncMenuShoppingItems(userId, weekStartStr, cookingSlots) {
   const pantry = await loadPantryItems(userId)
-  const fresh = buildShoppingItems(cookingSlots, pantry)
+  let fresh
+  try {
+    fresh = await requestShoppingItems(cookingSlots, pantry)
+  } catch (err) {
+    return { error: err }  // калькулятор не ответил — старый список не трогаем
+  }
 
   const { data: existing, error: loadErr } = await supabase
     .from('shopping_items')
