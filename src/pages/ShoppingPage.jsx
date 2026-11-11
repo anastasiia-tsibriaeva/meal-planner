@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
+import { getCurrentWeekStart, getWeekLabel, toDateKey } from '../lib/menuGenerator'
+import { syncMenuShoppingItems } from '../lib/shoppingSync'
 
 export default function ShoppingPage() {
   const { user }     = useAuth()
@@ -15,7 +16,7 @@ export default function ShoppingPage() {
   const [dbError, setDbError]         = useState('')
   const saveTimers = useRef({})
 
-  const weekStartStr = weekStart.toISOString().slice(0, 10)
+  const weekStartStr = toDateKey(weekStart)
 
   useEffect(() => { loadItems() }, [weekStartStr])
 
@@ -109,7 +110,9 @@ export default function ShoppingPage() {
       .select('id')
       .eq('user_id', user.id)
       .eq('week_start_date', weekStartStr)
-      .single()
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
     if (!weekMenu) return
 
@@ -121,53 +124,19 @@ export default function ShoppingPage() {
 
     if (!slots || slots.length === 0) return
 
-    // Собираем ингредиенты с учётом масштабирования порций
-    const seen = new Map()
-    for (const slot of slots) {
-      const servingsUsed  = slot.servings_used ?? slot.dishes?.servings_count ?? 1
-      const servingsCount = slot.dishes?.servings_count ?? 1
-      const scale = servingsCount > 0 ? servingsUsed / servingsCount : 1
+    const cookingSlots = slots
+      .filter(slot => slot.dishes)
+      .map(slot => ({ dish: slot.dishes, servingsUsed: slot.servings_used ?? slot.dishes.servings_count }))
 
-      for (const ing of slot.dishes?.ingredients || []) {
-        const key = ing.name.toLowerCase().trim()
-        if (!seen.has(key)) {
-          const parts = [ing.name]
-          if (ing.quantity) {
-            // Масштабируем количество, округляем до целого
-            const scaledQty = Math.round(ing.quantity * scale)
-            parts.push(String(scaledQty))
-          }
-          if (ing.unit) parts.push(ing.unit)
-          seen.set(key, parts.join(' ').trim())
-        }
-      }
-    }
-
-    if (seen.size === 0) return
-
-    const toInsert = Array.from(seen.values()).map((text, i) => ({
-      user_id:         user.id,
-      text,
-      checked:         false,
-      sort_order:      i,
-      source:          'menu',
-      week_start_date: weekStartStr,
-    }))
-
-    const { data: inserted, error: insertErr } = await supabase
-      .from('shopping_items')
-      .insert(toInsert)
-      .select()
-
-    if (insertErr) {
-      console.error('populateFromMenu insert error:', insertErr)
-      if (insertErr.code === '42P01') {
+    const { items, error } = await syncMenuShoppingItems(user.id, weekStartStr, cookingSlots)
+    if (error) {
+      console.error('populateFromMenu error:', error)
+      if (error.code === '42P01') {
         setDbError('Таблица shopping_items не найдена. Запусти migration_column_fix.sql в Supabase SQL Editor.')
       }
       return
     }
-
-    setMenuItems((inserted || []).sort((a, b) => a.sort_order - b.sort_order))
+    setMenuItems(items || [])
   }
 
   const saveText = useCallback((id, text) => {

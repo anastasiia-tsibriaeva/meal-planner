@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { generateMenu, getCurrentWeekStart, getWeekLabel } from '../lib/menuGenerator'
+import { generateMenu, getCurrentWeekStart, getWeekLabel, toDateKey } from '../lib/menuGenerator'
+import { syncMenuShoppingItems } from '../lib/shoppingSync'
 
 const MEAL_LABELS       = { breakfast: 'Завтрак', lunch: 'Обед', dinner: 'Ужин' }
 const MEAT_LABELS       = {
@@ -96,14 +97,16 @@ export default function MenuPage() {
 
   const loadOrGenerateMenu = useCallback(async () => {
     setLoading(true)
-    const weekStartStr = weekStart.toISOString().slice(0, 10)
+    const weekStartStr = toDateKey(weekStart)
 
     const { data: existingMenu } = await supabase
       .from('weekly_menus')
       .select('id')
       .eq('user_id', user.id)
       .eq('week_start_date', weekStartStr)
-      .single()
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
     if (existingMenu) {
       const { data: slots } = await supabase
@@ -138,8 +141,8 @@ export default function MenuPage() {
     })
     for (const slot of slots) {
       if (slot.day_index >= 0 && slot.day_index < 7) {
-        // Блюда ставим только для активных дней — неактивные остаются пустыми
-        if (activeDays.includes(slot.day_index)) {
+        // Показываем всё сохранённое, в т.ч. блюда, добавленные вручную в свободные дни
+        if (slot.dishes) {
           menu[slot.day_index][slot.meal_type] = {
             dish:         slot.dishes,
             isLeftover:   slot.is_leftover,
@@ -159,7 +162,7 @@ export default function MenuPage() {
   const persistMenu = async (menuData) => {
     if (!menuData) return
     setSaving(true)
-    const weekStartStr = weekStart.toISOString().slice(0, 10)
+    const weekStartStr = toDateKey(weekStart)
 
     await supabase
       .from('weekly_menus')
@@ -191,7 +194,19 @@ export default function MenuPage() {
         }
       }
     }
-    await supabase.from('menu_slots').insert(slots)
+    if (slots.length > 0) await supabase.from('menu_slots').insert(slots)
+
+    // Пересобираем список покупок «Из меню» под новое меню
+    const cookingSlots = []
+    for (const day of menuData) {
+      for (const mealType of MEAL_ORDER) {
+        const slot = day[mealType]
+        if (slot?.dish && !slot.isLeftover) cookingSlots.push({ dish: slot.dish, servingsUsed: slot.servingsUsed })
+      }
+    }
+    const { error: syncErr } = await syncMenuShoppingItems(user.id, weekStartStr, cookingSlots)
+    if (syncErr) console.error('shopping sync error:', syncErr)
+
     setSaving(false)
   }
 
@@ -215,30 +230,28 @@ export default function MenuPage() {
   const swapDish = (newDish) => {
     if (!swapModal) return
     const { dayIndex, mealType, isLeftoverSlot } = swapModal
-
     setMenu(prev => {
-      const originalDish = prev.find(d => d.dayIndex === dayIndex)?.[mealType]?.dish
-
-      let updated = prev.map(day =>
+      const originalSlot = prev.find(d => d.dayIndex === dayIndex)?.[mealType]
+      const originalDish = originalSlot?.dish
+      // При замене дня готовки сохраняем длину блока (готовка + остатки),
+      // иначе масштаб порций и список покупок разъезжаются с меню
+      const servingsUsed = (!isLeftoverSlot && originalDish)
+        ? (originalSlot.servingsUsed ?? newDish.servings_count)
+        : newDish.servings_count
+      const updated = prev.map(day =>
         day.dayIndex === dayIndex
-          ? { ...day, [mealType]: { dish: newDish, isLeftover: false, servingsUsed: newDish.servings_count } }
+          ? { ...day, [mealType]: { dish: newDish, isLeftover: false, servingsUsed } }
           : day
       )
-
       if (!isLeftoverSlot && originalDish) {
-        updated = updated.map(day => {
-          let changed = false
-          const newDay = { ...day }
-          for (const mt of MEAL_ORDER) {
-            if (newDay[mt]?.isLeftover && newDay[mt]?.dish?.id === originalDish.id) {
-              newDay[mt] = { dish: newDish, isLeftover: true, servingsUsed: newDish.servings_count }
-              changed = true
-            }
-          }
-          return changed ? newDay : day
-        })
+        // Меняем только остатки ЭТОГО приготовления: идущие следом дни того же приёма пищи
+        for (let d = dayIndex + 1; d < 7; d++) {
+          const slot = updated[d][mealType]
+          if (!slot && !updated[d].isActive) continue
+          if (!slot?.isLeftover || slot.dish?.id !== originalDish.id) break
+          updated[d] = { ...updated[d], [mealType]: { dish: newDish, isLeftover: true, servingsUsed } }
+        }
       }
-
       scheduleAutoSave(updated)
       return updated
     })
@@ -411,7 +424,7 @@ export default function MenuPage() {
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                           <div className="menu-meal-empty">не задано</div>
-                          {day.isActive && (
+                          {(
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => openSwapModal(day.dayIndex, mealType, false)}

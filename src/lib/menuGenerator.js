@@ -224,51 +224,82 @@ export function generateMenu(dishes, weekStart, { activeDays = [0, 1, 2, 3, 4, 5
   return menu
 }
 
+const CLUSTER_MEAL_TYPES = ['breakfast', 'lunch', 'dinner']
+const windowOf = day => Math.floor(day / 3)
+const canStartOn = (dish, day) => !dish?.weekends_only || IS_WEEKEND[day]
+
 /**
- * Пост-обработка: блюда с общими ингредиентами сдвигаем в один 3-дневный период.
+ * Разбивает меню на «блоки приготовления»: день готовки + идущие за ним дни остатков
+ * того же блюда в том же приёме пищи.
  */
-function clusterByIngredients(menu) {
-  const cookingSlots = []
-  for (let day = 0; day < 7; day++) {
-    if (!menu[day].isActive) continue
-    for (const mealType of ['breakfast', 'lunch', 'dinner']) {
+function buildCookingBlocks(menu) {
+  const blocks = []
+  for (const mealType of CLUSTER_MEAL_TYPES) {
+    let current = null
+    for (let day = 0; day < 7; day++) {
+      if (!menu[day].isActive) continue
       const slot = menu[day][mealType]
-      if (slot && !slot.isLeftover && slot.dish?.ingredients?.length > 0) {
-        cookingSlots.push({ day, mealType, slot })
+      if (!slot?.dish) { current = null; continue }
+      if (!slot.isLeftover) {
+        current = { mealType, days: [day], dish: slot.dish }
+        blocks.push(current)
+      } else if (current && current.dish.id === slot.dish.id) {
+        current.days.push(day)
+      } else {
+        current = null
       }
     }
   }
+  return blocks
+}
 
-  for (let i = 0; i < cookingSlots.length; i++) {
-    for (let j = i + 1; j < cookingSlots.length; j++) {
-      const a = cookingSlots[i]
-      const b = cookingSlots[j]
-      if (Math.floor(a.day / 3) === Math.floor(b.day / 3)) continue
-      if (getSharedIngredients(a.slot.dish, b.slot.dish).length === 0) continue
+function swapBlocks(menu, b, c) {
+  const bSlots = b.days.map(d => menu[d][b.mealType])
+  const cSlots = c.days.map(d => menu[d][c.mealType])
+  b.days.forEach((d, k) => { menu[d][b.mealType] = cSlots[k] })
+  c.days.forEach((d, k) => { menu[d][c.mealType] = bSlots[k] })
+  const tmp = b.dish
+  b.dish = c.dish
+  c.dish = tmp
+}
 
-      const targetWindow = Math.floor(a.day / 3)
-      const targetDays   = [0, 1, 2].map(x => x + targetWindow * 3).filter(d => d < 7)
+/**
+ * Пост-обработка: блюда с общими ингредиентами сдвигаем в один 3-дневный период.
+ * Двигаем блоки целиком (готовка + её остатки) и меняем местами только блоки
+ * одинаковой длины в одном приёме пищи — так остатки никогда не окажутся раньше готовки.
+ */
+function clusterByIngredients(menu) {
+  const blocks = buildCookingBlocks(menu)
 
-      for (const targetDay of targetDays) {
-        if (targetDay === a.day) continue
-        if (!menu[targetDay].isActive) continue
-        const targetSlot = menu[targetDay][b.mealType]
-        if (!targetSlot || targetSlot.isLeftover) continue
-        if (b.slot.dish?.weekends_only && !IS_WEEKEND[targetDay]) continue
+  for (let i = 0; i < blocks.length; i++) {
+    for (let j = i + 1; j < blocks.length; j++) {
+      const a = blocks[i]
+      const b = blocks[j]
+      const targetWindow = windowOf(a.days[0])
+      if (targetWindow === windowOf(b.days[0])) continue
+      if (getSharedIngredients(a.dish, b.dish).length === 0) continue
 
-        menu[b.day][b.mealType]     = targetSlot
-        menu[targetDay][b.mealType] = b.slot
-        b.day = targetDay
-        break
-      }
+      const c = blocks.find(x =>
+        x !== a && x !== b &&
+        x.mealType === b.mealType &&
+        x.days.length === b.days.length &&
+        windowOf(x.days[0]) === targetWindow &&
+        canStartOn(b.dish, x.days[0]) &&
+        canStartOn(x.dish, b.days[0]) &&
+        getSharedIngredients(a.dish, x.dish).length === 0
+      )
+      if (!c) continue
+
+      swapBlocks(menu, b, c)
     }
   }
 }
 
 function getSharedIngredients(dishA, dishB) {
   if (!dishA?.ingredients || !dishB?.ingredients) return []
-  const namesA = new Set(dishA.ingredients.map(i => i.name.toLowerCase().trim()))
-  return dishB.ingredients.filter(i => namesA.has(i.name.toLowerCase().trim()))
+  const norm = n => (n || '').toLowerCase().trim().replace(/ё/g, 'е')
+  const namesA = new Set(dishA.ingredients.map(i => norm(i.name)))
+  return dishB.ingredients.filter(i => namesA.has(norm(i.name)))
 }
 
 export function getCurrentWeekStart() {
@@ -285,4 +316,15 @@ export function getWeekLabel(weekStart) {
   const weekEnd = new Date(weekStart)
   weekEnd.setDate(weekStart.getDate() + 6)
   return `${formatDate(weekStart)} — ${formatDate(weekEnd)}`
+}
+
+/**
+ * Ключ недели «YYYY-MM-DD» по локальной дате (без перевода в UTC —
+ * иначе летом в UTC+1 понедельник 00:00 превращается в воскресенье).
+ */
+export function toDateKey(date) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }

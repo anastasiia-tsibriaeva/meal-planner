@@ -1,6 +1,7 @@
 -- =============================================
--- Meal Planner — схема базы данных Supabase
--- Запусти этот файл в Supabase SQL Editor
+-- Meal Planner — схема базы данных Supabase (для новой, пустой базы)
+-- Запусти этот файл в Supabase SQL Editor.
+-- Если база уже есть — запускай migration_column_fix.sql.
 -- =============================================
 
 -- Таблица блюд
@@ -13,6 +14,7 @@ CREATE TABLE dishes (
   difficulty TEXT NOT NULL DEFAULT 'easy',
   cooking_time INTEGER,
   servings_count INTEGER NOT NULL DEFAULT 1,
+  weekends_only BOOLEAN NOT NULL DEFAULT FALSE,
   recipe_text TEXT,
   recipe_link TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -45,13 +47,28 @@ CREATE TABLE menu_slots (
   meal_type TEXT NOT NULL CHECK (meal_type IN ('breakfast', 'lunch', 'dinner')),
   dish_id UUID REFERENCES dishes(id) ON DELETE SET NULL,
   is_leftover BOOLEAN DEFAULT FALSE,
+  servings_used INTEGER,
   UNIQUE(menu_id, day_index, meal_type)
 );
 
 -- Таблица настроек пользователя
 CREATE TABLE user_settings (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
-  pantry_items TEXT[] DEFAULT ARRAY['соль', 'чёрный перец', 'перец чёрный', 'перец молотый']
+  pantry_items TEXT[] DEFAULT ARRAY['соль', 'чёрный перец', 'перец чёрный', 'перец молотый'],
+  active_days INTEGER[] NOT NULL DEFAULT '{0,1,2,3,4,5,6}',
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Таблица списка покупок
+CREATE TABLE shopping_items (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  checked BOOLEAN NOT NULL DEFAULT FALSE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL CHECK (source IN ('menu', 'custom')),
+  week_start_date DATE,               -- NULL для своих пунктов (source = 'custom')
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- =============================================
@@ -63,6 +80,7 @@ ALTER TABLE ingredients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE weekly_menus ENABLE ROW LEVEL SECURITY;
 ALTER TABLE menu_slots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shopping_items ENABLE ROW LEVEL SECURITY;
 
 -- Политики для dishes
 CREATE POLICY "dishes_select" ON dishes FOR SELECT USING (auth.uid() = user_id);
@@ -108,6 +126,16 @@ CREATE POLICY "slots_delete" ON menu_slots FOR DELETE USING (
 CREATE POLICY "settings_select" ON user_settings FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "settings_insert" ON user_settings FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "settings_update" ON user_settings FOR UPDATE USING (auth.uid() = user_id);
+
+-- Политики для shopping_items
+CREATE POLICY "shopping_select" ON shopping_items FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "shopping_insert" ON shopping_items FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "shopping_update" ON shopping_items FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY "shopping_delete" ON shopping_items FOR DELETE USING (auth.uid() = user_id);
+
+-- Realtime для синхронизации списка покупок между устройствами
+ALTER TABLE shopping_items REPLICA IDENTITY FULL;
+ALTER PUBLICATION supabase_realtime ADD TABLE shopping_items;
 
 -- =============================================
 -- Триггер: создаёт настройки при регистрации нового пользователя
